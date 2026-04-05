@@ -109,6 +109,14 @@ namespace NfsSharp.Xdr
             WriteVarOpaque(Encoding.UTF8.GetBytes(value));
         }
 
+        /// <summary>Writes <paramref name="data"/> directly to the stream with no length prefix and no padding.</summary>
+        public void WriteRaw(byte[] data)
+        {
+            if (data == null) throw new ArgumentNullException(nameof(data));
+            if (data.Length > 0)
+                _stream.Write(data, 0, data.Length);
+        }
+
         /// <summary>Writes a variable-length array of unsigned 32-bit integers.</summary>
         public void WriteUInt32Array(uint[] values)
         {
