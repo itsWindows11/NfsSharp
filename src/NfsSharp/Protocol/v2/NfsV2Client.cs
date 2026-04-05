@@ -10,10 +10,9 @@ namespace NfsSharp.Protocol.v2
 {
     /// <summary>
     /// NFSv2 protocol client (RFC 1094).
-    /// NFSv2 is stateless and uses fixed 32-byte file handles.
-    /// All file sizes are limited to 2 GiB.
+    /// NFSv2 is stateless; file handles are fixed 32 bytes; max file size 2 GiB.
     /// </summary>
-    internal sealed class NfsV2Client : INfsFileOperations, IDisposable
+    internal sealed class NfsV2Client : INfsProtocolClient
     {
         private readonly RpcClient       _rpc;
         private readonly AuthCredentials _credentials;
@@ -21,7 +20,25 @@ namespace NfsSharp.Protocol.v2
         private const uint NfsV2Program = RpcConstants.NfsProgram;
         private const uint NfsV2Version = 2;
         private const int  FhSize       = 32;
-        private const int  MaxReadWrite = 8192; // NFSv2 RSIZE/WSIZE limit
+        private const int  MaxReadWrite = 8192;
+
+        // NFSv2 procedure numbers (RFC 1094 §2.2)
+        private const uint ProcNull    = 0;
+        private const uint ProcGetAttr = 1;
+        private const uint ProcSetAttr = 2;
+        private const uint ProcLookup  = 4;
+        private const uint ProcReadLink= 5;
+        private const uint ProcRead    = 6;
+        private const uint ProcWrite   = 8;
+        private const uint ProcCreate  = 9;
+        private const uint ProcRemove  = 12;
+        private const uint ProcRename  = 16;
+        private const uint ProcLink    = 17;
+        private const uint ProcSymLink = 10;
+        private const uint ProcMkDir   = 14;
+        private const uint ProcRmDir   = 15;
+        private const uint ProcReadDir = 16;
+        private const uint ProcStatFs  = 17;
 
         internal NfsV2Client(string host, int port, AuthCredentials credentials,
             TimeSpan connectTimeout, TimeSpan readTimeout)
@@ -30,27 +47,26 @@ namespace NfsSharp.Protocol.v2
             _credentials = credentials;
         }
 
-        internal Task ConnectAsync(CancellationToken ct = default) => _rpc.ConnectAsync(ct);
+        // ── INfsProtocolClient: Connection ────────────────────────────────────
 
-        // ── INfsFileOperations ────────────────────────────────────────────────
+        public Task ConnectAsync(CancellationToken ct = default) => _rpc.ConnectAsync(ct);
+
+        // ── INfsProtocolClient: File I/O ──────────────────────────────────────
 
         public async Task<NfsReadResult> ReadAsync(
             NfsFileHandle handle, long offset, int count, CancellationToken ct)
         {
             if (count > MaxReadWrite) count = MaxReadWrite;
-
-            var reader = await CallAsync(6 /* NFSPROC_READ */, w =>
+            var reader = await CallAsync(ProcRead, w =>
             {
-                WriteFixedHandle(w, handle);
-                w.WriteUInt32(0);              // totalcount (ignored in v2)
+                WriteHandle(w, handle);
+                w.WriteUInt32(0);
                 w.WriteUInt32((uint)offset);
                 w.WriteUInt32((uint)count);
-                w.WriteUInt32(0);              // totalcount again
+                w.WriteUInt32(0);
             }, ct).ConfigureAwait(false);
-
             CheckStatus(reader);
-            // fattr
-            reader.ReadFixedOpaque(68); // 17 × uint32
+            reader.ReadFixedOpaque(68); // fattr (17 × uint32)
             byte[] data = reader.ReadVarOpaque(MaxReadWrite);
             return new NfsReadResult(data, data.Length == 0);
         }
@@ -61,73 +77,116 @@ namespace NfsSharp.Protocol.v2
             if (count > MaxReadWrite) count = MaxReadWrite;
             var slice = new byte[count];
             Array.Copy(data, dataOffset, slice, 0, count);
-
-            var reader = await CallAsync(8 /* NFSPROC_WRITE */, w =>
+            var reader = await CallAsync(ProcWrite, w =>
             {
-                WriteFixedHandle(w, handle);
-                w.WriteUInt32(0);              // beginoffset (ignored)
+                WriteHandle(w, handle);
+                w.WriteUInt32(0);
                 w.WriteUInt32((uint)offset);
-                w.WriteUInt32((uint)count);    // totalcount (ignored)
+                w.WriteUInt32((uint)count);
                 w.WriteVarOpaque(slice);
             }, ct).ConfigureAwait(false);
-
             CheckStatus(reader);
             return count;
         }
 
+        public Task CommitAsync(NfsFileHandle handle, long offset, int count, CancellationToken ct)
+            => Task.CompletedTask; // NFSv2 writes are always synchronous
+
+        // ── INfsProtocolClient: Attributes ────────────────────────────────────
+
         public async Task<NfsFileAttributes> GetAttrAsync(NfsFileHandle handle, CancellationToken ct)
         {
-            var reader = await CallAsync(1 /* NFSPROC_GETATTR */, w =>
-                WriteFixedHandle(w, handle), ct).ConfigureAwait(false);
-
+            var reader = await CallAsync(ProcGetAttr, w => WriteHandle(w, handle), ct).ConfigureAwait(false);
             CheckStatus(reader);
             return ReadFattr2(reader);
         }
 
-        public Task CommitAsync(NfsFileHandle handle, long offset, int count, CancellationToken ct)
+        public async Task SetAttrAsync(NfsFileHandle handle, NfsSetAttributes attrs, CancellationToken ct)
         {
-            // NFSv2 has no COMMIT; writes are always synchronous.
-            return Task.CompletedTask;
+            if (attrs.Size.HasValue)
+                throw new NotSupportedException(
+                    "NFSv2 SETATTR does not support size-based truncation reliably. " +
+                    "Use NFSv3 or later for SetLength support.");
+
+            var reader = await CallAsync(ProcSetAttr, w =>
+            {
+                WriteHandle(w, handle);
+                WriteSattr2(w, attrs);
+            }, ct).ConfigureAwait(false);
+            CheckStatus(reader);
         }
 
-        // ── Lookup ────────────────────────────────────────────────────────────
+        // ── INfsProtocolClient: Namespace ─────────────────────────────────────
 
-        internal async Task<(NfsFileHandle handle, NfsFileAttributes attrs)> LookupAsync(
-            NfsFileHandle dir, string name, CancellationToken ct = default)
+        public async Task<(NfsFileHandle Handle, NfsFileAttributes Attributes)> LookupAsync(
+            NfsFileHandle dir, string name, CancellationToken ct)
         {
-            var reader = await CallAsync(4 /* NFSPROC_LOOKUP */, w =>
+            var reader = await CallAsync(ProcLookup, w =>
             {
-                WriteFixedHandle(w, dir);
+                WriteHandle(w, dir);
                 w.WriteString(name);
             }, ct).ConfigureAwait(false);
-
             CheckStatus(reader);
-            var handle = new NfsFileHandle(reader.ReadFixedOpaque(FhSize));
-            var attrs  = ReadFattr2(reader);
-            return (handle, attrs);
+            var fh    = new NfsFileHandle(reader.ReadFixedOpaque(FhSize));
+            var attrs = ReadFattr2(reader);
+            return (fh, attrs);
         }
 
-        // ── ReadDir ──────────────────────────────────────────────────────────
+        public async Task<NfsFileHandle> CreateFileAsync(
+            NfsFileHandle dir, string name, NfsSetAttributes attrs, CancellationToken ct)
+        {
+            var reader = await CallAsync(ProcCreate, w =>
+            {
+                WriteHandle(w, dir);
+                w.WriteString(name);
+                WriteSattr2(w, attrs);
+            }, ct).ConfigureAwait(false);
+            CheckStatus(reader);
+            return new NfsFileHandle(reader.ReadFixedOpaque(FhSize));
+        }
 
-        internal async Task<IReadOnlyList<NfsDirectoryEntry>> ReadDirAsync(
-            NfsFileHandle dir, CancellationToken ct = default)
+        public async Task<NfsFileHandle> MkDirAsync(
+            NfsFileHandle dir, string name, NfsSetAttributes attrs, CancellationToken ct)
+        {
+            var reader = await CallAsync(ProcMkDir, w =>
+            {
+                WriteHandle(w, dir);
+                w.WriteString(name);
+                WriteSattr2(w, attrs);
+            }, ct).ConfigureAwait(false);
+            CheckStatus(reader);
+            return new NfsFileHandle(reader.ReadFixedOpaque(FhSize));
+        }
+
+        public async Task SymLinkAsync(
+            NfsFileHandle dir, string name, string linkTarget, NfsSetAttributes attrs, CancellationToken ct)
+        {
+            var reader = await CallAsync(ProcSymLink, w =>
+            {
+                WriteHandle(w, dir);
+                w.WriteString(name);
+                w.WriteString(linkTarget);
+                WriteSattr2(w, attrs);
+            }, ct).ConfigureAwait(false);
+            CheckStatus(reader);
+        }
+
+        public async Task<IReadOnlyList<NfsDirectoryEntry>> ReadDirAsync(
+            NfsFileHandle dir, CancellationToken ct)
         {
             var results = new List<NfsDirectoryEntry>();
             uint cookie = 0;
-
             while (true)
             {
-                var reader = await CallAsync(16 /* NFSPROC_READDIR */, w =>
+                var reader = await CallAsync(ProcReadDir, w =>
                 {
-                    WriteFixedHandle(w, dir);
+                    WriteHandle(w, dir);
                     w.WriteUInt32(cookie);
                     w.WriteUInt32(8192);
                 }, ct).ConfigureAwait(false);
-
                 CheckStatus(reader);
-
                 bool any = false;
-                while (reader.ReadBool()) // value_follows
+                while (reader.ReadBool())
                 {
                     uint   fileid = reader.ReadUInt32();
                     string name   = reader.ReadString(255);
@@ -136,20 +195,90 @@ namespace NfsSharp.Protocol.v2
                     cookie = ck;
                     any = true;
                 }
-
-                bool eof = reader.ReadBool();
-                if (eof || !any) break;
+                if (reader.ReadBool() || !any) break; // eof
             }
-
             return results;
         }
 
-        // ── Helpers ──────────────────────────────────────────────────────────
+        public async Task<string> ReadLinkAsync(NfsFileHandle handle, CancellationToken ct)
+        {
+            var reader = await CallAsync(ProcReadLink, w => WriteHandle(w, handle), ct).ConfigureAwait(false);
+            CheckStatus(reader);
+            return reader.ReadString(4096);
+        }
 
-        private Task<XdrReader> CallAsync(uint procedure, Action<XdrWriter> args, CancellationToken ct)
-            => _rpc.CallAsync(NfsV2Program, NfsV2Version, procedure, _credentials, args, ct);
+        public async Task RemoveAsync(NfsFileHandle dir, string name, CancellationToken ct)
+        {
+            var reader = await CallAsync(ProcRemove, w =>
+            {
+                WriteHandle(w, dir);
+                w.WriteString(name);
+            }, ct).ConfigureAwait(false);
+            CheckStatus(reader);
+        }
 
-        private static void WriteFixedHandle(XdrWriter w, NfsFileHandle handle)
+        public async Task RmDirAsync(NfsFileHandle dir, string name, CancellationToken ct)
+        {
+            var reader = await CallAsync(ProcRmDir, w =>
+            {
+                WriteHandle(w, dir);
+                w.WriteString(name);
+            }, ct).ConfigureAwait(false);
+            CheckStatus(reader);
+        }
+
+        public async Task RenameAsync(
+            NfsFileHandle fromDir, string fromName,
+            NfsFileHandle toDir,   string toName,
+            CancellationToken ct)
+        {
+            var reader = await CallAsync(ProcRename, w =>
+            {
+                WriteHandle(w, fromDir);
+                w.WriteString(fromName);
+                WriteHandle(w, toDir);
+                w.WriteString(toName);
+            }, ct).ConfigureAwait(false);
+            CheckStatus(reader);
+        }
+
+        public async Task LinkAsync(
+            NfsFileHandle file, NfsFileHandle linkDir, string linkName, CancellationToken ct)
+        {
+            var reader = await CallAsync(ProcLink, w =>
+            {
+                WriteHandle(w, file);
+                WriteHandle(w, linkDir);
+                w.WriteString(linkName);
+            }, ct).ConfigureAwait(false);
+            CheckStatus(reader);
+        }
+
+        public async Task<NfsFsStat> FsStatAsync(NfsFileHandle handle, CancellationToken ct)
+        {
+            var reader = await CallAsync(ProcStatFs, w => WriteHandle(w, handle), ct).ConfigureAwait(false);
+            CheckStatus(reader);
+            reader.ReadUInt32(); // tsize (transfer size)
+            uint bsize  = reader.ReadUInt32();
+            uint blocks = reader.ReadUInt32();
+            uint bfree  = reader.ReadUInt32();
+            uint bavail = reader.ReadUInt32();
+            ulong total  = (ulong)blocks * bsize;
+            ulong free   = (ulong)bfree  * bsize;
+            ulong avail  = (ulong)bavail * bsize;
+            return new NfsFsStat
+            {
+                TotalBytes = total, FreeBytes = free, AvailBytes = avail,
+                TotalFiles = 0,     FreeFiles  = 0,   AvailFiles  = 0,
+            };
+        }
+
+        // ── Private helpers ───────────────────────────────────────────────────
+
+        private Task<XdrReader> CallAsync(uint proc, Action<XdrWriter> args, CancellationToken ct)
+            => _rpc.CallAsync(NfsV2Program, NfsV2Version, proc, _credentials, args, ct);
+
+        private static void WriteHandle(XdrWriter w, NfsFileHandle handle)
         {
             var padded = new byte[FhSize];
             Array.Copy(handle.Data, padded, Math.Min(handle.Data.Length, FhSize));
@@ -159,13 +288,22 @@ namespace NfsSharp.Protocol.v2
         private static void CheckStatus(XdrReader reader)
         {
             int status = reader.ReadInt32();
-            if (status != 0)
-                throw new NfsException((NfsStatus)status);
+            if (status != 0) throw new NfsException((NfsStatus)status);
+        }
+
+        private static void WriteSattr2(XdrWriter w, NfsSetAttributes a)
+        {
+            w.WriteUInt32(a.Mode ?? 0b110_100_100u); // 0644 rw-r--r--
+            w.WriteUInt32(a.Uid  ?? 0xFFFFFFFF); // uid  (0xFFFF = no change)
+            w.WriteUInt32(a.Gid  ?? 0xFFFFFFFF); // gid
+            w.WriteUInt32(a.Size.HasValue ? (uint)a.Size.Value : 0xFFFFFFFF); // size
+            w.WriteUInt32(0xFFFFFFFF); w.WriteUInt32(0); // atime (no change)
+            w.WriteUInt32(0xFFFFFFFF); w.WriteUInt32(0); // mtime (no change)
         }
 
         private static NfsFileAttributes ReadFattr2(XdrReader r)
         {
-            var type    = (NfsFileType)r.ReadUInt32();
+            var  type   = (NfsFileType)r.ReadUInt32();
             uint mode   = r.ReadUInt32();
             uint nlink  = r.ReadUInt32();
             uint uid    = r.ReadUInt32();
@@ -176,33 +314,22 @@ namespace NfsSharp.Protocol.v2
             r.ReadUInt32(); // blocks
             r.ReadUInt32(); // fsid
             uint fileid = r.ReadUInt32();
-            var atime   = ReadNfsTime2(r);
-            var mtime   = ReadNfsTime2(r);
-            var ctime   = ReadNfsTime2(r);
-
+            var  atime  = ReadTime2(r);
+            var  mtime  = ReadTime2(r);
+            var  ctime  = ReadTime2(r);
             return new NfsFileAttributes
             {
-                Type       = type,
-                Mode       = mode,
-                NLink      = nlink,
-                Uid        = uid,
-                Gid        = gid,
-                Size       = size,
-                Used       = size,
-                Rdev       = rdev,
-                FileId     = fileid,
-                AccessTime = atime,
-                ModifyTime = mtime,
-                ChangeTime = ctime,
+                Type = type, Mode = mode, NLink = nlink,
+                Uid = uid, Gid = gid, Size = size, Used = size,
+                Rdev = rdev, FileId = fileid,
+                AccessTime = atime, ModifyTime = mtime, ChangeTime = ctime,
             };
         }
 
-        private static DateTimeOffset ReadNfsTime2(XdrReader r)
+        private static DateTimeOffset ReadTime2(XdrReader r)
         {
-            uint sec  = r.ReadUInt32();
-            uint usec = r.ReadUInt32();
-            return DateTimeOffset.FromUnixTimeSeconds(sec)
-                   + TimeSpan.FromTicks(usec * 10L); // µs → 100-ns ticks
+            uint sec = r.ReadUInt32(); uint usec = r.ReadUInt32();
+            return DateTimeOffset.FromUnixTimeSeconds(sec) + TimeSpan.FromTicks(usec * 10L);
         }
 
         public void Dispose() => _rpc.Dispose();

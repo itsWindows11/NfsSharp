@@ -9,17 +9,16 @@ using NfsSharp.Xdr;
 namespace NfsSharp.Protocol.v3
 {
     /// <summary>
-    /// NFSv3 protocol client (RFC 1813).
-    /// Implements all 22 NFSv3 procedures including READDIRPLUS and COMMIT.
+    /// NFSv3 protocol client (RFC 1813). Implements all 22 procedures.
     /// </summary>
-    internal sealed class NfsV3Client : INfsFileOperations, IDisposable
+    internal sealed class NfsV3Client : INfsProtocolClient
     {
         private readonly RpcClient       _rpc;
         private readonly AuthCredentials _credentials;
 
-        private const uint NfsV3Program = RpcConstants.NfsProgram;
-        private const uint NfsV3Version = 3;
-        private const int  MaxRW        = 1 * 1024 * 1024; // 1 MiB per operation
+        private const uint Prog    = RpcConstants.NfsProgram;
+        private const uint Version = 3;
+        private const int  MaxRW   = 1 * 1024 * 1024;
 
         internal NfsV3Client(string host, int port, AuthCredentials credentials,
             TimeSpan connectTimeout, TimeSpan readTimeout)
@@ -28,28 +27,27 @@ namespace NfsSharp.Protocol.v3
             _credentials = credentials;
         }
 
-        internal Task ConnectAsync(CancellationToken ct = default) => _rpc.ConnectAsync(ct);
+        // ── INfsProtocolClient: Connection ────────────────────────────────────
 
-        // ── INfsFileOperations ────────────────────────────────────────────────
+        public Task ConnectAsync(CancellationToken ct = default) => _rpc.ConnectAsync(ct);
+
+        // ── INfsProtocolClient: File I/O ──────────────────────────────────────
 
         public async Task<NfsReadResult> ReadAsync(
             NfsFileHandle handle, long offset, int count, CancellationToken ct)
         {
             if (count > MaxRW) count = MaxRW;
-
-            var reader = await CallAsync(RpcConstants.Nfs3ProcRead, w =>
+            var r = await Call(RpcConstants.Nfs3ProcRead, w =>
             {
                 handle.WriteTo(w);
                 w.WriteUInt64((ulong)offset);
                 w.WriteUInt32((uint)count);
             }, ct).ConfigureAwait(false);
-
-            CheckStatus(reader);
-            SkipPostOpAttr(reader); // post_op_attr
-            uint bytesRead = reader.ReadUInt32();
-            bool eof       = reader.ReadBool();
-            byte[] data    = reader.ReadVarOpaque(MaxRW);
-            // data length may differ from bytesRead for trailing padding reasons; trust bytesRead.
+            CheckStatus(r);
+            SkipPostOpAttr(r);
+            uint bytesRead = r.ReadUInt32();
+            bool eof       = r.ReadBool();
+            byte[] data    = r.ReadVarOpaque(MaxRW);
             if (data.Length > (int)bytesRead)
             {
                 var trimmed = new byte[bytesRead];
@@ -65,385 +63,264 @@ namespace NfsSharp.Protocol.v3
             if (count > MaxRW) count = MaxRW;
             var slice = new byte[count];
             Array.Copy(data, dataOffset, slice, 0, count);
-
-            var reader = await CallAsync(RpcConstants.Nfs3ProcWrite, w =>
+            var r = await Call(RpcConstants.Nfs3ProcWrite, w =>
             {
                 handle.WriteTo(w);
                 w.WriteUInt64((ulong)offset);
                 w.WriteUInt32((uint)count);
-                w.WriteInt32(0); // UNSTABLE = 0 (caller calls Commit separately)
+                w.WriteInt32(0); // UNSTABLE
                 w.WriteVarOpaque(slice);
             }, ct).ConfigureAwait(false);
-
-            CheckStatus(reader);
-            SkipWccData(reader);    // file_wcc
-            uint written = reader.ReadUInt32();
-            reader.ReadInt32();     // committed
-            reader.ReadFixedOpaque(8); // verf (write verifier)
+            CheckStatus(r);
+            SkipWccData(r);
+            uint written = r.ReadUInt32();
+            r.ReadInt32();        // committed
+            r.ReadFixedOpaque(8); // write verifier
             return (int)written;
-        }
-
-        public async Task<NfsFileAttributes> GetAttrAsync(NfsFileHandle handle, CancellationToken ct)
-        {
-            var reader = await CallAsync(RpcConstants.Nfs3ProcGetAttr, w =>
-                handle.WriteTo(w), ct).ConfigureAwait(false);
-
-            CheckStatus(reader);
-            return NfsFileAttributes.ReadV3(reader);
         }
 
         public async Task CommitAsync(NfsFileHandle handle, long offset, int count, CancellationToken ct)
         {
-            var reader = await CallAsync(RpcConstants.Nfs3ProcCommit, w =>
+            var r = await Call(RpcConstants.Nfs3ProcCommit, w =>
             {
                 handle.WriteTo(w);
                 w.WriteUInt64((ulong)offset);
                 w.WriteUInt32((uint)count);
             }, ct).ConfigureAwait(false);
-
-            CheckStatus(reader);
-            SkipWccData(reader); // file_wcc
-            // verf (8 bytes) – discard
-            reader.ReadFixedOpaque(8);
+            CheckStatus(r);
+            SkipWccData(r);
+            r.ReadFixedOpaque(8); // write verifier
         }
 
-        // ── SETATTR ───────────────────────────────────────────────────────────
+        // ── INfsProtocolClient: Attributes ────────────────────────────────────
 
-        internal async Task SetAttrAsync(NfsFileHandle handle, NfsSetAttributes attrs, CancellationToken ct = default)
+        public async Task<NfsFileAttributes> GetAttrAsync(NfsFileHandle handle, CancellationToken ct)
         {
-            var reader = await CallAsync(RpcConstants.Nfs3ProcSetAttr, w =>
+            var r = await Call(RpcConstants.Nfs3ProcGetAttr, w => handle.WriteTo(w), ct).ConfigureAwait(false);
+            CheckStatus(r);
+            return NfsFileAttributes.ReadV3(r);
+        }
+
+        public async Task SetAttrAsync(NfsFileHandle handle, NfsSetAttributes attrs, CancellationToken ct)
+        {
+            var r = await Call(RpcConstants.Nfs3ProcSetAttr, w =>
             {
                 handle.WriteTo(w);
                 WriteSetAttr(w, attrs);
-                w.WriteBool(false); // guard (no sattrguard3)
+                w.WriteBool(false); // no sattrguard3
             }, ct).ConfigureAwait(false);
-
-            CheckStatus(reader);
-            SkipWccData(reader);
+            CheckStatus(r);
+            SkipWccData(r);
         }
 
-        // ── LOOKUP ────────────────────────────────────────────────────────────
+        // ── INfsProtocolClient: Namespace ─────────────────────────────────────
 
-        internal async Task<(NfsFileHandle handle, NfsFileAttributes attrs)> LookupAsync(
-            NfsFileHandle dir, string name, CancellationToken ct = default)
+        public async Task<(NfsFileHandle Handle, NfsFileAttributes Attributes)> LookupAsync(
+            NfsFileHandle dir, string name, CancellationToken ct)
         {
-            var reader = await CallAsync(RpcConstants.Nfs3ProcLookup, w =>
+            var r = await Call(RpcConstants.Nfs3ProcLookup, w =>
             {
                 dir.WriteTo(w);
                 w.WriteString(name);
             }, ct).ConfigureAwait(false);
-
-            CheckStatus(reader);
-            var fh    = NfsFileHandle.ReadFrom(reader);
-            var attrs = ReadPostOpAttr(reader)!;     // object attributes
-            SkipPostOpAttr(reader);                  // dir attributes
+            CheckStatus(r);
+            var fh    = NfsFileHandle.ReadFrom(r);
+            var attrs = ReadPostOpAttr(r)!;
+            SkipPostOpAttr(r); // dir attrs
             return (fh, attrs!);
         }
 
-        // ── ACCESS ────────────────────────────────────────────────────────────
-
-        internal async Task<NfsAccessFlags> AccessAsync(
-            NfsFileHandle handle, NfsAccessFlags requested, CancellationToken ct = default)
+        public async Task<NfsFileHandle> CreateFileAsync(
+            NfsFileHandle dir, string name, NfsSetAttributes attrs, CancellationToken ct)
         {
-            var reader = await CallAsync(RpcConstants.Nfs3ProcAccess, w =>
-            {
-                handle.WriteTo(w);
-                w.WriteUInt32((uint)requested);
-            }, ct).ConfigureAwait(false);
-
-            CheckStatus(reader);
-            SkipPostOpAttr(reader);
-            return (NfsAccessFlags)reader.ReadUInt32();
-        }
-
-        // ── READLINK ──────────────────────────────────────────────────────────
-
-        internal async Task<string> ReadLinkAsync(NfsFileHandle handle, CancellationToken ct = default)
-        {
-            var reader = await CallAsync(RpcConstants.Nfs3ProcReadLink, w =>
-                handle.WriteTo(w), ct).ConfigureAwait(false);
-
-            CheckStatus(reader);
-            SkipPostOpAttr(reader);
-            return reader.ReadString(4096);
-        }
-
-        // ── CREATE / MKDIR / SYMLINK / MKNOD ─────────────────────────────────
-
-        internal async Task<(NfsFileHandle? handle, NfsFileAttributes? attrs)> CreateAsync(
-            NfsFileHandle dir, string name, NfsSetAttributes attrs, bool exclusive = false,
-            CancellationToken ct = default)
-        {
-            var reader = await CallAsync(RpcConstants.Nfs3ProcCreate, w =>
+            var r = await Call(RpcConstants.Nfs3ProcCreate, w =>
             {
                 dir.WriteTo(w);
                 w.WriteString(name);
-                w.WriteInt32(exclusive ? 1 : 0); // EXCLUSIVE = 1, UNCHECKED = 0
-                if (!exclusive) WriteSetAttr(w, attrs);
-                else            w.WriteFixedOpaque(new byte[8], 8); // createverf3
+                w.WriteInt32(0); // UNCHECKED
+                WriteSetAttr(w, attrs);
             }, ct).ConfigureAwait(false);
-
-            CheckStatus(reader);
-            return ReadPostOpFhAttr(reader);
+            CheckStatus(r);
+            var (fh, _) = ReadPostOpFhAttr(r);
+            return fh ?? throw new NfsException(NfsStatus.ServerFault, "CREATE returned no file handle.");
         }
 
-        internal async Task<(NfsFileHandle? handle, NfsFileAttributes? attrs)> MkDirAsync(
-            NfsFileHandle dir, string name, NfsSetAttributes attrs, CancellationToken ct = default)
+        public async Task<NfsFileHandle> MkDirAsync(
+            NfsFileHandle dir, string name, NfsSetAttributes attrs, CancellationToken ct)
         {
-            var reader = await CallAsync(RpcConstants.Nfs3ProcMkDir, w =>
+            var r = await Call(RpcConstants.Nfs3ProcMkDir, w =>
             {
                 dir.WriteTo(w);
                 w.WriteString(name);
                 WriteSetAttr(w, attrs);
             }, ct).ConfigureAwait(false);
-
-            CheckStatus(reader);
-            return ReadPostOpFhAttr(reader);
+            CheckStatus(r);
+            var (fh, _) = ReadPostOpFhAttr(r);
+            return fh ?? throw new NfsException(NfsStatus.ServerFault, "MKDIR returned no file handle.");
         }
 
-        internal async Task SymLinkAsync(NfsFileHandle dir, string name, string linkPath,
-            NfsSetAttributes attrs, CancellationToken ct = default)
+        public async Task SymLinkAsync(
+            NfsFileHandle dir, string name, string linkTarget, NfsSetAttributes attrs, CancellationToken ct)
         {
-            var reader = await CallAsync(RpcConstants.Nfs3ProcSymLink, w =>
+            var r = await Call(RpcConstants.Nfs3ProcSymLink, w =>
             {
                 dir.WriteTo(w);
                 w.WriteString(name);
                 WriteSetAttr(w, attrs);
-                w.WriteString(linkPath);
+                w.WriteString(linkTarget);
             }, ct).ConfigureAwait(false);
-
-            CheckStatus(reader);
+            CheckStatus(r);
         }
 
-        // ── REMOVE / RMDIR ────────────────────────────────────────────────────
-
-        internal async Task RemoveAsync(NfsFileHandle dir, string name, CancellationToken ct = default)
+        public async Task<IReadOnlyList<NfsDirectoryEntry>> ReadDirAsync(
+            NfsFileHandle dir, CancellationToken ct)
         {
-            var reader = await CallAsync(RpcConstants.Nfs3ProcRemove, w =>
+            // Use READDIRPLUS to populate Attributes and FileHandle on each entry.
+            var results    = new List<NfsDirectoryEntry>();
+            ulong cookie   = 0;
+            byte[] verifier = new byte[8];
+
+            while (true)
+            {
+                var r = await Call(RpcConstants.Nfs3ProcReadDirPlus, w =>
+                {
+                    dir.WriteTo(w);
+                    w.WriteUInt64(cookie);
+                    w.WriteFixedOpaque(verifier, 8);
+                    w.WriteUInt32(4096);
+                    w.WriteUInt32(65536);
+                }, ct).ConfigureAwait(false);
+                CheckStatus(r);
+                SkipPostOpAttr(r);
+                verifier = r.ReadFixedOpaque(8);
+                bool any = false;
+                while (r.ReadBool())
+                {
+                    ulong  fileid = r.ReadUInt64();
+                    string n      = r.ReadString(255);
+                    ulong  ck     = r.ReadUInt64();
+                    NfsFileAttributes? attrs = ReadPostOpAttr(r);
+                    NfsFileHandle? fh = r.ReadBool() ? NfsFileHandle.ReadFrom(r) : null;
+                    results.Add(new NfsDirectoryEntry
+                    {
+                        FileId = fileid, Name = n, Cookie = ck,
+                        Attributes = attrs, FileHandle = fh,
+                    });
+                    cookie = ck;
+                    any = true;
+                }
+                if (r.ReadBool() || !any) break; // eof
+            }
+            return results;
+        }
+
+        public async Task<string> ReadLinkAsync(NfsFileHandle handle, CancellationToken ct)
+        {
+            var r = await Call(RpcConstants.Nfs3ProcReadLink, w => handle.WriteTo(w), ct).ConfigureAwait(false);
+            CheckStatus(r);
+            SkipPostOpAttr(r);
+            return r.ReadString(4096);
+        }
+
+        public async Task RemoveAsync(NfsFileHandle dir, string name, CancellationToken ct)
+        {
+            var r = await Call(RpcConstants.Nfs3ProcRemove, w =>
             {
                 dir.WriteTo(w);
                 w.WriteString(name);
             }, ct).ConfigureAwait(false);
-
-            CheckStatus(reader);
+            CheckStatus(r);
         }
 
-        internal async Task RmDirAsync(NfsFileHandle dir, string name, CancellationToken ct = default)
+        public async Task RmDirAsync(NfsFileHandle dir, string name, CancellationToken ct)
         {
-            var reader = await CallAsync(RpcConstants.Nfs3ProcRmDir, w =>
+            var r = await Call(RpcConstants.Nfs3ProcRmDir, w =>
             {
                 dir.WriteTo(w);
                 w.WriteString(name);
             }, ct).ConfigureAwait(false);
-
-            CheckStatus(reader);
+            CheckStatus(r);
         }
 
-        // ── RENAME ────────────────────────────────────────────────────────────
-
-        internal async Task RenameAsync(
+        public async Task RenameAsync(
             NfsFileHandle fromDir, string fromName,
             NfsFileHandle toDir,   string toName,
-            CancellationToken ct = default)
+            CancellationToken ct)
         {
-            var reader = await CallAsync(RpcConstants.Nfs3ProcRename, w =>
+            var r = await Call(RpcConstants.Nfs3ProcRename, w =>
             {
                 fromDir.WriteTo(w);
                 w.WriteString(fromName);
                 toDir.WriteTo(w);
                 w.WriteString(toName);
             }, ct).ConfigureAwait(false);
-
-            CheckStatus(reader);
+            CheckStatus(r);
         }
 
-        // ── LINK ──────────────────────────────────────────────────────────────
-
-        internal async Task LinkAsync(
-            NfsFileHandle file, NfsFileHandle linkDir, string linkName,
-            CancellationToken ct = default)
+        public async Task LinkAsync(
+            NfsFileHandle file, NfsFileHandle linkDir, string linkName, CancellationToken ct)
         {
-            var reader = await CallAsync(RpcConstants.Nfs3ProcLink, w =>
+            var r = await Call(RpcConstants.Nfs3ProcLink, w =>
             {
                 file.WriteTo(w);
                 linkDir.WriteTo(w);
                 w.WriteString(linkName);
             }, ct).ConfigureAwait(false);
-
-            CheckStatus(reader);
+            CheckStatus(r);
         }
 
-        // ── READDIR ───────────────────────────────────────────────────────────
-
-        internal async Task<IReadOnlyList<NfsDirectoryEntry>> ReadDirAsync(
-            NfsFileHandle dir, CancellationToken ct = default)
+        public async Task<NfsFsStat> FsStatAsync(NfsFileHandle handle, CancellationToken ct)
         {
-            var results = new List<NfsDirectoryEntry>();
-            ulong cookie     = 0;
-            byte[] cookieVerf = new byte[8];
-
-            while (true)
-            {
-                var reader = await CallAsync(RpcConstants.Nfs3ProcReadDir, w =>
-                {
-                    dir.WriteTo(w);
-                    w.WriteUInt64(cookie);
-                    w.WriteFixedOpaque(cookieVerf, 8);
-                    w.WriteUInt32(4096); // dircount
-                }, ct).ConfigureAwait(false);
-
-                CheckStatus(reader);
-                SkipPostOpAttr(reader);
-                cookieVerf = reader.ReadFixedOpaque(8);
-
-                bool any = false;
-                while (reader.ReadBool()) // value_follows
-                {
-                    ulong  fileid = reader.ReadUInt64();
-                    string name   = reader.ReadString(255);
-                    ulong  ck     = reader.ReadUInt64();
-                    results.Add(new NfsDirectoryEntry { FileId = fileid, Name = name, Cookie = ck });
-                    cookie = ck;
-                    any = true;
-                }
-
-                bool eof = reader.ReadBool();
-                if (eof || !any) break;
-            }
-
-            return results;
-        }
-
-        // ── READDIRPLUS ──────────────────────────────────────────────────────
-
-        internal async Task<IReadOnlyList<NfsDirectoryEntry>> ReadDirPlusAsync(
-            NfsFileHandle dir, CancellationToken ct = default)
-        {
-            var results = new List<NfsDirectoryEntry>();
-            ulong cookie      = 0;
-            byte[] cookieVerf = new byte[8];
-
-            while (true)
-            {
-                var reader = await CallAsync(RpcConstants.Nfs3ProcReadDirPlus, w =>
-                {
-                    dir.WriteTo(w);
-                    w.WriteUInt64(cookie);
-                    w.WriteFixedOpaque(cookieVerf, 8);
-                    w.WriteUInt32(4096);   // dircount
-                    w.WriteUInt32(65536);  // maxcount
-                }, ct).ConfigureAwait(false);
-
-                CheckStatus(reader);
-                SkipPostOpAttr(reader);
-                cookieVerf = reader.ReadFixedOpaque(8);
-
-                bool any = false;
-                while (reader.ReadBool()) // value_follows
-                {
-                    ulong  fileid = reader.ReadUInt64();
-                    string name   = reader.ReadString(255);
-                    ulong  ck     = reader.ReadUInt64();
-                    // name_attributes (post_op_attr)
-                    NfsFileAttributes? attrs = ReadPostOpAttr(reader);
-                    // name_handle (post_op_fh3)
-                    NfsFileHandle? fh = null;
-                    if (reader.ReadBool()) fh = NfsFileHandle.ReadFrom(reader);
-
-                    results.Add(new NfsDirectoryEntry
-                    {
-                        FileId     = fileid,
-                        Name       = name,
-                        Cookie     = ck,
-                        Attributes = attrs,
-                        FileHandle = fh,
-                    });
-                    cookie = ck;
-                    any = true;
-                }
-
-                bool eof = reader.ReadBool();
-                if (eof || !any) break;
-            }
-
-            return results;
-        }
-
-        // ── FSSTAT / FSINFO / PATHCONF ────────────────────────────────────────
-
-        internal async Task<NfsFsStat> FsStatAsync(NfsFileHandle fsh, CancellationToken ct = default)
-        {
-            var reader = await CallAsync(RpcConstants.Nfs3ProcFsStat, w =>
-                fsh.WriteTo(w), ct).ConfigureAwait(false);
-
-            CheckStatus(reader);
-            SkipPostOpAttr(reader);
+            var r = await Call(RpcConstants.Nfs3ProcFsStat, w => handle.WriteTo(w), ct).ConfigureAwait(false);
+            CheckStatus(r);
+            SkipPostOpAttr(r);
             return new NfsFsStat
             {
-                TotalBytes   = reader.ReadUInt64(),
-                FreeBytes    = reader.ReadUInt64(),
-                AvailBytes   = reader.ReadUInt64(),
-                TotalFiles   = reader.ReadUInt64(),
-                FreeFiles    = reader.ReadUInt64(),
-                AvailFiles   = reader.ReadUInt64(),
+                TotalBytes = r.ReadUInt64(), FreeBytes  = r.ReadUInt64(), AvailBytes  = r.ReadUInt64(),
+                TotalFiles = r.ReadUInt64(), FreeFiles  = r.ReadUInt64(), AvailFiles  = r.ReadUInt64(),
             };
         }
 
-        // ── Helpers ──────────────────────────────────────────────────────────
+        // ── Private helpers ───────────────────────────────────────────────────
 
-        private Task<XdrReader> CallAsync(uint procedure, Action<XdrWriter> args, CancellationToken ct)
-            => _rpc.CallAsync(NfsV3Program, NfsV3Version, procedure, _credentials, args, ct);
+        private Task<XdrReader> Call(uint proc, Action<XdrWriter> args, CancellationToken ct)
+            => _rpc.CallAsync(Prog, Version, proc, _credentials, args, ct);
 
-        private static void CheckStatus(XdrReader reader)
+        private static void CheckStatus(XdrReader r)
         {
-            int status = reader.ReadInt32();
-            if (status != 0)
-                throw new NfsException((NfsStatus)status);
+            int s = r.ReadInt32();
+            if (s != 0) throw new NfsException((NfsStatus)s);
         }
 
-        private static void SkipPostOpAttr(XdrReader reader)
-        {
-            if (reader.ReadBool()) // attributes_follow
-                NfsFileAttributes.ReadV3(reader);
-        }
+        private static void SkipPostOpAttr(XdrReader r)
+        { if (r.ReadBool()) NfsFileAttributes.ReadV3(r); }
 
-        private static NfsFileAttributes? ReadPostOpAttr(XdrReader reader)
-        {
-            return reader.ReadBool() ? NfsFileAttributes.ReadV3(reader) : null;
-        }
+        private static NfsFileAttributes? ReadPostOpAttr(XdrReader r)
+            => r.ReadBool() ? NfsFileAttributes.ReadV3(r) : null;
 
-        private static (NfsFileHandle? fh, NfsFileAttributes? attrs) ReadPostOpFhAttr(XdrReader reader)
+        private static (NfsFileHandle? fh, NfsFileAttributes? attrs) ReadPostOpFhAttr(XdrReader r)
         {
-            NfsFileHandle? fh = null;
-            if (reader.ReadBool()) fh = NfsFileHandle.ReadFrom(reader);
-            NfsFileAttributes? attrs = ReadPostOpAttr(reader);
-            SkipWccData(reader); // dir_wcc
+            NfsFileHandle? fh = r.ReadBool() ? NfsFileHandle.ReadFrom(r) : null;
+            NfsFileAttributes? attrs = ReadPostOpAttr(r);
+            SkipWccData(r); // dir_wcc
             return (fh, attrs);
         }
 
-        private static void SkipWccData(XdrReader reader)
+        private static void SkipWccData(XdrReader r)
         {
-            // pre_op_attr (wcc_attr optional)
-            if (reader.ReadBool())
-            {
-                reader.ReadUInt64(); // size
-                reader.ReadUInt32(); reader.ReadUInt32(); // mtime
-                reader.ReadUInt32(); reader.ReadUInt32(); // ctime
-            }
-            // post_op_attr
-            SkipPostOpAttr(reader);
+            if (r.ReadBool()) // pre_op_attr
+            { r.ReadUInt64(); r.ReadUInt32(); r.ReadUInt32(); r.ReadUInt32(); r.ReadUInt32(); }
+            SkipPostOpAttr(r);
         }
 
         private static void WriteSetAttr(XdrWriter w, NfsSetAttributes a)
         {
-            w.WriteBool(a.Mode.HasValue);    if (a.Mode.HasValue)    w.WriteUInt32(a.Mode.Value);
-            w.WriteBool(a.Uid.HasValue);     if (a.Uid.HasValue)     w.WriteUInt32(a.Uid.Value);
-            w.WriteBool(a.Gid.HasValue);     if (a.Gid.HasValue)     w.WriteUInt32(a.Gid.Value);
-            w.WriteBool(a.Size.HasValue);    if (a.Size.HasValue)    w.WriteUInt64(a.Size.Value);
-            // atime: SET_TO_SERVER_TIME = 1
-            w.WriteInt32(1); // SET_TO_SERVER_TIME
-            // mtime: SET_TO_SERVER_TIME = 1
-            w.WriteInt32(1); // SET_TO_SERVER_TIME
+            w.WriteBool(a.Mode.HasValue); if (a.Mode.HasValue) w.WriteUInt32(a.Mode.Value);
+            w.WriteBool(a.Uid.HasValue);  if (a.Uid.HasValue)  w.WriteUInt32(a.Uid.Value);
+            w.WriteBool(a.Gid.HasValue);  if (a.Gid.HasValue)  w.WriteUInt32(a.Gid.Value);
+            w.WriteBool(a.Size.HasValue); if (a.Size.HasValue) w.WriteUInt64(a.Size.Value);
+            w.WriteInt32(1); // SET_TO_SERVER_TIME for atime
+            w.WriteInt32(1); // SET_TO_SERVER_TIME for mtime
         }
 
         public void Dispose() => _rpc.Dispose();
