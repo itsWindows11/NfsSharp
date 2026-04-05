@@ -149,8 +149,13 @@ internal sealed class RpcClient : IDisposable
         uint fragmentHeader = (uint)payload.Length | RpcConstants.RecordLastFragment;
         BinaryPrimitives.WriteUInt32BigEndian(header, fragmentHeader);
 
+#if !NETSTANDARD2_0
+        await _stream.WriteAsync(header.AsMemory(0, RecordHeaderSize), ct).ConfigureAwait(false);
+        await _stream.WriteAsync(payload.AsMemory(), ct).ConfigureAwait(false);
+#else
         await _stream.WriteAsync(header, 0, RecordHeaderSize, ct).ConfigureAwait(false);
         await _stream.WriteAsync(payload, 0, payload.Length, ct).ConfigureAwait(false);
+#endif
         await _stream.FlushAsync(ct).ConfigureAwait(false);
     }
 
@@ -172,7 +177,11 @@ internal sealed class RpcClient : IDisposable
                 throw new RpcException($"Invalid RPC fragment size: {fragSize}");
 
             byte[] fragData = await ReadExactAsync(fragSize, ct).ConfigureAwait(false);
+#if !NETSTANDARD2_0
+            ms.Write(fragData.AsSpan());
+#else
             ms.Write(fragData, 0, fragData.Length);
+#endif
         }
 
         return ms.ToArray();
@@ -184,7 +193,11 @@ internal sealed class RpcClient : IDisposable
         int offset = 0;
         while (offset < count)
         {
+#if !NETSTANDARD2_0
+            int n = await _stream!.ReadAsync(buf.AsMemory(offset, count - offset), ct).ConfigureAwait(false);
+#else
             int n = await _stream!.ReadAsync(buf, offset, count - offset, ct).ConfigureAwait(false);
+#endif
             if (n == 0)
                 throw new EndOfStreamException("Connection closed by remote host during RPC read.");
             offset += n;

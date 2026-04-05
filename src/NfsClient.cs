@@ -756,7 +756,11 @@ public sealed class NfsClient : IAsyncDisposable, IDisposable
                         if (read.Data.Length == 0)
                             throw new IOException("Unexpected EOF while downloading remote file.");
 
+#if NETSTANDARD2_0
                         await local.WriteAsync(read.Data, 0, read.Data.Length, ct).ConfigureAwait(false);
+#else
+                        await local.WriteAsync(read.Data.AsMemory(0, read.Data.Length), ct).ConfigureAwait(false);
+#endif
 
                         remoteOffset += read.Data.Length;
                         remaining -= read.Data.Length;
@@ -838,8 +842,14 @@ public sealed class NfsClient : IAsyncDisposable, IDisposable
                     int readTotal = 0;
                     while (readTotal < segmentLength)
                     {
+#if NETSTANDARD2_0
                         int n = await local.ReadAsync(buffer, readTotal, segmentLength - readTotal, ct)
                             .ConfigureAwait(false);
+#else
+                        int n = await local.ReadAsync(
+                            buffer.AsMemory(readTotal, segmentLength - readTotal), ct)
+                            .ConfigureAwait(false);
+#endif
                         if (n == 0)
                             throw new EndOfStreamException("Unexpected end of local file during upload.");
                         readTotal += n;

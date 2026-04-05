@@ -129,7 +129,11 @@ public sealed class XdrReader
         int offset = 0;
         while (offset < count)
         {
+#if !NETSTANDARD2_0
+            int n = _stream.Read(buf.AsSpan(offset, count - offset));
+#else
             int n = _stream.Read(buf, offset, count - offset);
+#endif
             if (n == 0)
                 throw new EndOfStreamException("Unexpected end of XDR data.");
             offset += n;

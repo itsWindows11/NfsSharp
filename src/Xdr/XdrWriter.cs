@@ -26,28 +26,44 @@ public sealed class XdrWriter
     public void WriteInt32(int value)
     {
         BinaryPrimitives.WriteInt32BigEndian(_int32Buf, value);
+#if !NETSTANDARD2_0
+        _stream.Write(_int32Buf.AsSpan(0, 4));
+#else
         _stream.Write(_int32Buf, 0, 4);
+#endif
     }
 
     /// <summary>Writes an unsigned 32-bit integer.</summary>
     public void WriteUInt32(uint value)
     {
         BinaryPrimitives.WriteUInt32BigEndian(_int32Buf, value);
+#if !NETSTANDARD2_0
+        _stream.Write(_int32Buf.AsSpan(0, 4));
+#else
         _stream.Write(_int32Buf, 0, 4);
+#endif
     }
 
     /// <summary>Writes a signed 64-bit integer (hyper).</summary>
     public void WriteInt64(long value)
     {
         BinaryPrimitives.WriteInt64BigEndian(_int64Buf, value);
+#if !NETSTANDARD2_0
+        _stream.Write(_int64Buf.AsSpan(0, 8));
+#else
         _stream.Write(_int64Buf, 0, 8);
+#endif
     }
 
     /// <summary>Writes an unsigned 64-bit integer (unsigned hyper).</summary>
     public void WriteUInt64(ulong value)
     {
         BinaryPrimitives.WriteUInt64BigEndian(_int64Buf, value);
+#if !NETSTANDARD2_0
+        _stream.Write(_int64Buf.AsSpan(0, 8));
+#else
         _stream.Write(_int64Buf, 0, 8);
+#endif
     }
 
     /// <summary>Writes a boolean (XDR TRUE = 1, FALSE = 0).</summary>
@@ -61,14 +77,22 @@ public sealed class XdrWriter
 #else
         BinaryPrimitives.WriteInt32BigEndian(_int32Buf, BitConverter.SingleToInt32Bits(value));
 #endif
+#if !NETSTANDARD2_0
+        _stream.Write(_int32Buf.AsSpan(0, 4));
+#else
         _stream.Write(_int32Buf, 0, 4);
+#endif
     }
 
     /// <summary>Writes a 64-bit IEEE 754 double.</summary>
     public void WriteDouble(double value)
     {
         BinaryPrimitives.WriteInt64BigEndian(_int64Buf, BitConverter.DoubleToInt64Bits(value));
+#if !NETSTANDARD2_0
+        _stream.Write(_int64Buf.AsSpan(0, 8));
+#else
         _stream.Write(_int64Buf, 0, 8);
+#endif
     }
 
 #if NETSTANDARD2_0
@@ -90,7 +114,11 @@ public sealed class XdrWriter
         if (length < 0) throw new ArgumentOutOfRangeException(nameof(length));
         if (data.Length < length) throw new ArgumentException("Buffer too short for specified length.", nameof(data));
 
+#if !NETSTANDARD2_0
+        _stream.Write(data.AsSpan(0, length));
+#else
         _stream.Write(data, 0, length);
+#endif
         WritePadding(length);
     }
 
@@ -103,7 +131,11 @@ public sealed class XdrWriter
         WriteUInt32((uint)data.Length);
         if (data.Length > 0)
         {
+#if !NETSTANDARD2_0
+            _stream.Write(data.AsSpan());
+#else
             _stream.Write(data, 0, data.Length);
+#endif
             WritePadding(data.Length);
         }
     }
@@ -120,7 +152,13 @@ public sealed class XdrWriter
     {
         if (data == null) throw new ArgumentNullException(nameof(data));
         if (data.Length > 0)
+        {
+#if !NETSTANDARD2_0
+            _stream.Write(data.AsSpan());
+#else
             _stream.Write(data, 0, data.Length);
+#endif
+        }
     }
 
     /// <summary>Writes a variable-length array of unsigned 32-bit integers.</summary>
@@ -137,7 +175,13 @@ public sealed class XdrWriter
     {
         int pad = (4 - (length & 3)) & 3;
         if (pad > 0)
+        {
+#if !NETSTANDARD2_0
+            _stream.Write(s_padding.AsSpan(0, pad));
+#else
             _stream.Write(s_padding, 0, pad);
+#endif
+        }
     }
 
     /// <summary>Returns a <see cref="MemoryStream"/> with all written data.</summary>
