@@ -184,6 +184,77 @@ namespace NfsSharp
         }
 
         /// <summary>
+        /// Applies <paramref name="attrs"/> to the file or directory at <paramref name="path"/>.
+        /// Only non-<see langword="null"/> fields in <paramref name="attrs"/> are changed;
+        /// leave a field <see langword="null"/> to keep its current value.
+        /// </summary>
+        public async Task SetAttrAsync(
+            string path, NfsSetAttributes attrs, CancellationToken ct = default)
+        {
+            ThrowIfDisposed(); EnsureConnected();
+            var (handle, _) = await LookupAsync(path, ct).ConfigureAwait(false);
+            await _protocol!.SetAttrAsync(handle, attrs, ct).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Applies <paramref name="attrs"/> to the object identified by <paramref name="handle"/>.
+        /// Only non-<see langword="null"/> fields in <paramref name="attrs"/> are changed;
+        /// leave a field <see langword="null"/> to keep its current value.
+        /// </summary>
+        public Task SetAttrAsync(
+            NfsFileHandle handle, NfsSetAttributes attrs, CancellationToken ct = default)
+        {
+            ThrowIfDisposed(); EnsureConnected();
+            return _protocol!.SetAttrAsync(handle, attrs, ct);
+        }
+
+        /// <summary>
+        /// Returns <see langword="true"/> if a file, directory, or any other object exists
+        /// at <paramref name="path"/> on the server; <see langword="false"/> if it does not.
+        /// </summary>
+        /// <remarks>
+        /// All NFS errors other than <see cref="NfsStatus.NoEnt"/> are still propagated as
+        /// <see cref="NfsException"/> so that permission errors and server faults are not
+        /// silently swallowed.
+        /// </remarks>
+        public async Task<bool> ExistsAsync(string path, CancellationToken ct = default)
+        {
+            ThrowIfDisposed(); EnsureConnected();
+            try
+            {
+                await LookupAsync(path, ct).ConfigureAwait(false);
+                return true;
+            }
+            catch (NfsException ex) when (ex.Status == NfsStatus.NoEnt)
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Returns <see langword="true"/> if the object identified by <paramref name="handle"/>
+        /// still exists on the server (i.e. GETATTR succeeds); <see langword="false"/> if the
+        /// server reports <see cref="NfsStatus.NoEnt"/> (stale handle or deleted object).
+        /// </summary>
+        /// <remarks>
+        /// All NFS errors other than <see cref="NfsStatus.NoEnt"/> are still propagated as
+        /// <see cref="NfsException"/>.
+        /// </remarks>
+        public async Task<bool> ExistsAsync(NfsFileHandle handle, CancellationToken ct = default)
+        {
+            ThrowIfDisposed(); EnsureConnected();
+            try
+            {
+                await _protocol!.GetAttrAsync(handle, ct).ConfigureAwait(false);
+                return true;
+            }
+            catch (NfsException ex) when (ex.Status == NfsStatus.NoEnt)
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
         /// Resolves <paramref name="path"/> relative to the export root and returns its
         /// file handle and current attributes.
         /// </summary>
