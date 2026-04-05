@@ -1,15 +1,7 @@
-# NuGet Trusted Publishing Setup
-# ================================
-# Option A — API key (simple):
-#   1. Go to your NuGet.org account → API Keys → Create a key scoped to "NfsSharp".
-#   2. Add it as a GitHub secret named NUGET_API_KEY under:
-#      Settings → Secrets and variables → Actions → New repository secret
-#   3. Tag a release: git tag v0.1.0 && git push origin v0.1.0
-#
-# Option B — Trusted publishing (recommended, no secret needed):
-#   1. On NuGet.org, go to your package → Manage → Trusted publishers.
-#   2. Add a GitHub Actions publisher with your org/repo and this workflow file name.
-#   3. Remove the --api-key line from the "Push NuGet package" step below.
+# NuGet publishing workflow
+# - Uses NuGet trusted publishing via OIDC token exchange (NuGet/login@v1).
+# - Obtains a short-lived API key and uses it for dotnet nuget push.
+# - Triggered on version tags: v*.
 
 name: Publish to NuGet
 
@@ -19,8 +11,8 @@ on:
       - "v*"
 
 permissions:
-  id-token: write
   contents: read
+  id-token: write
 
 jobs:
   publish:
@@ -36,7 +28,7 @@ jobs:
           dotnet-version: "10.0.x"
 
       - name: Restore
-        run: dotnet restore
+        run: dotnet restore src/NfsSharp.csproj
 
       - name: Build
         run: dotnet build src/NfsSharp.csproj -c Release --no-restore
@@ -44,8 +36,14 @@ jobs:
       - name: Pack
         run: dotnet pack src/NfsSharp.csproj -c Release --no-build -o ./artifacts
 
+      - name: NuGet login (OIDC -> temp API key)
+        uses: NuGet/login@v1
+        id: login
+        with:
+          user: itsWindows11
+
       - name: Push NuGet package
-        run: dotnet nuget push ./artifacts/*.nupkg --source https://api.nuget.org/v3/index.json --api-key ${{ secrets.NUGET_API_KEY }}
+        run: dotnet nuget push ./artifacts/*.nupkg --source https://api.nuget.org/v3/index.json --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --skip-duplicate
 
       - name: Push symbol package
-        run: dotnet nuget push ./artifacts/*.snupkg --source https://api.nuget.org/v3/index.json --api-key ${{ secrets.NUGET_API_KEY }}
+        run: dotnet nuget push ./artifacts/*.snupkg --source https://api.nuget.org/v3/index.json --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --skip-duplicate

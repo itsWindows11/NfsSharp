@@ -190,10 +190,10 @@ The CI workflow runs automatically on every push and pull request. No setup is r
 3. Click **New repository secret** and add:
    - **Name:** `NUGET_API_KEY`
    - **Value:** Your NuGet.org API key (scoped to **push** on the `NfsSharp` package)
-4. Alternatively (recommended), use **NuGet trusted publishing**:
+4. For **trusted publishing**:
    - On NuGet.org, navigate to your package → **Manage → Trusted publishers → Add GitHub Actions publisher**.
-   - Enter your GitHub org/repo and the workflow file name (`publish.yml`).
-   - Remove the `--api-key` flag from the push steps in `.github/workflows/publish.yml`.
+   - Enter your GitHub org/repo and workflow file name (`publish.yml`).
+   - Keep `NuGet/login@v1` in `.github/workflows/publish.yml`; it exchanges OIDC for a short-lived `NUGET_API_KEY` output used by `dotnet nuget push`.
 5. **Tag a release** to trigger the workflow:
    ```sh
    git tag v0.1.0
