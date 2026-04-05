@@ -108,6 +108,38 @@ await stream.FlushAsync(); // issues NFS COMMIT
 
 ---
 
+## Downloading and Uploading Files
+
+`DownloadFileToLocalAsync` and `UploadFileFromLocalAsync` bypass `NfsStream` and use parallel ranged NFS READ/WRITE calls for high-throughput bulk transfers.
+
+```csharp
+// Download a remote file to a local path (4 workers, 4 MiB chunks by default)
+await nfs.DownloadFileToLocalAsync("backups/db.tar.gz", "/tmp/db.tar.gz");
+
+// Download with a progress callback and custom parallelism
+var progress = new Progress<long>(bytes => Console.WriteLine($"Downloaded {bytes} bytes"));
+await nfs.DownloadFileToLocalAsync(
+    remotePath: "large/video.mp4",
+    localPath: "/tmp/video.mp4",
+    degreeOfParallelism: 8,
+    chunkSize: 8 * 1024 * 1024, // 8 MiB chunks
+    progress: progress);
+
+// Upload a local file to a remote path (4 workers, 4 MiB chunks by default)
+await nfs.UploadFileFromLocalAsync("/tmp/report.pdf", "reports/report.pdf");
+
+// Upload with a progress callback and custom parallelism
+var uploadProgress = new Progress<long>(bytes => Console.WriteLine($"Uploaded {bytes} bytes"));
+await nfs.UploadFileFromLocalAsync(
+    localPath: "/tmp/dataset.parquet",
+    remotePath: "datasets/dataset.parquet",
+    degreeOfParallelism: 8,
+    chunkSize: 8 * 1024 * 1024, // 8 MiB chunks
+    progress: uploadProgress);
+```
+
+---
+
 ## Version Negotiation
 
 ```csharp
