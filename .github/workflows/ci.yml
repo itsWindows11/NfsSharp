@@ -29,10 +29,10 @@ jobs:
             9.0.x
 
       - name: Restore
-        run: dotnet restore src/NfsSharp/NfsSharp.csproj
+        run: dotnet restore src/NfsSharp.csproj
 
       - name: Build (${{ matrix.tfm }})
-        run: dotnet build src/NfsSharp/NfsSharp.csproj -c Release --no-restore --framework ${{ matrix.tfm }}
+        run: dotnet build src/NfsSharp.csproj -c Release --no-restore --framework ${{ matrix.tfm }}
 
   # Run the test suite. The test project targets net10.0.
   test:
