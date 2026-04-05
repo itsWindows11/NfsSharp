@@ -1,38 +1,38 @@
 using NfsSharp.Protocol;
 
-namespace NfsSharp.Tests.Protocol
+namespace NfsSharp.Tests.Protocol;
+
+[TestClass]
+public class NfsStatusTests
 {
-    public class NfsStatusTests
+    [TestMethod]
+    public void NfsException_StoresStatus()
     {
-        [Fact]
-        public void NfsException_StoresStatus()
-        {
-            var ex = new NfsException(NfsStatus.NoEnt);
-            Assert.Equal(NfsStatus.NoEnt, ex.Status);
-        }
+        var ex = new NfsException(NfsStatus.NoEnt);
+        Assert.AreEqual(NfsStatus.NoEnt, ex.Status);
+    }
 
-        [Fact]
-        public void NfsException_MessageContainsStatusName()
-        {
-            var ex = new NfsException(NfsStatus.Acces);
-            Assert.Contains("Acces", ex.Message);
-        }
+    [TestMethod]
+    public void NfsException_MessageContainsStatusName()
+    {
+        var ex = new NfsException(NfsStatus.Acces);
+        StringAssert.Contains(ex.Message, "Acces");
+    }
 
-        [Fact]
-        public void NfsException_WithCustomMessage_ContainsBothParts()
-        {
-            var ex = new NfsException(NfsStatus.Io, "disk failure");
-            Assert.Contains("disk failure", ex.Message);
-            Assert.Contains("Io", ex.Message);
-        }
+    [TestMethod]
+    public void NfsException_WithCustomMessage_ContainsBothParts()
+    {
+        var ex = new NfsException(NfsStatus.Io, "disk failure");
+        StringAssert.Contains(ex.Message, "disk failure");
+        StringAssert.Contains(ex.Message, "Io");
+    }
 
-        [Fact]
-        public void NfsException_WithInner_StoresInner()
-        {
-            var inner = new System.Exception("inner");
-            var ex = new NfsException(NfsStatus.ServerFault, "wrapped", inner);
-            Assert.Same(inner, ex.InnerException);
-            Assert.Equal(NfsStatus.ServerFault, ex.Status);
-        }
+    [TestMethod]
+    public void NfsException_WithInner_StoresInner()
+    {
+        var inner = new System.Exception("inner");
+        var ex = new NfsException(NfsStatus.ServerFault, "wrapped", inner);
+        Assert.AreSame(inner, ex.InnerException);
+        Assert.AreEqual(NfsStatus.ServerFault, ex.Status);
     }
 }

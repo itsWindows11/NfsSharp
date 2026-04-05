@@ -1,6 +1,6 @@
 <Solution>
   <Folder Name="/src/">
-    <Project Path="src/NfsSharp/NfsSharp.csproj" />
+    <Project Path="src/NfsSharp.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/NfsSharp.Tests/NfsSharp.Tests.csproj" />
