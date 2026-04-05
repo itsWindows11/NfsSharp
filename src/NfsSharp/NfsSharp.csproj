@@ -4,7 +4,7 @@
     <TargetFrameworks>net9.0;net8.0;netstandard2.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <LangVersion>latest</LangVersion>
+    <LangVersion>14</LangVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
     <!-- NuGet package metadata -->
@@ -42,6 +42,12 @@
   </ItemGroup>
 
   <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+    <!-- PolySharp is a source-only package: it emits polyfill types that the C# 14   -->
+    <!-- compiler needs (IsExternalInit, RequiredMemberAttribute, etc.) without adding  -->
+    <!-- a runtime dependency that consumers would inherit.                            -->
+    <PackageReference Include="PolySharp" Version="1.14.1"
+                      PrivateAssets="All"
+                      IncludeAssets="runtime;build;native;contentfiles;analyzers" />
     <PackageReference Include="System.Memory" Version="4.5.5" />
     <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="8.0.0" />
   </ItemGroup>

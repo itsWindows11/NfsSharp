@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using NfsSharp.Auth;
@@ -38,6 +39,8 @@ namespace NfsSharp
         private readonly AuthCredentials  _credentials;
         private readonly TimeSpan         _connectTimeout;
         private readonly TimeSpan         _readTimeout;
+        private readonly int              _customNfsPort;    // 0 = discover via portmapper
+        private readonly int              _customMountPort;  // 0 = discover via portmapper
 
         // All version knowledge ends here after ConnectAsync completes.
         private INfsProtocolClient? _protocol;
@@ -64,25 +67,53 @@ namespace NfsSharp
         /// <param name="version">
         /// NFS version to use; <see cref="NfsVersion.Auto"/> tries NFSv4 → v3 → v2.
         /// </param>
+        /// <param name="nfsPort">
+        /// TCP port the NFS server listens on. When <c>0</c> (default) the port is discovered
+        /// automatically via the portmapper service on port 111. Specify a non-zero value to
+        /// bypass the portmapper — useful behind firewalls or with non-standard configurations.
+        /// </param>
+        /// <param name="mountPort">
+        /// TCP port the Mount service listens on. When <c>0</c> (default) the port is discovered
+        /// via the portmapper. Specify a non-zero value to bypass the portmapper.
+        /// </param>
         /// <param name="connectTimeout">Timeout for each connection attempt. Defaults to 30 s.</param>
         /// <param name="readTimeout">Timeout for each read/write RPC. Defaults to 60 s.</param>
         public NfsClient(
             string     server,
             string     exportPath,
             NfsVersion version        = NfsVersion.Auto,
+            int        nfsPort        = 0,
+            int        mountPort      = 0,
             TimeSpan?  connectTimeout = null,
             TimeSpan?  readTimeout    = null)
-            : this(server, exportPath, new AuthNoneCredentials(), version, connectTimeout, readTimeout)
+            : this(server, exportPath, new AuthNoneCredentials(), version,
+                   nfsPort, mountPort, connectTimeout, readTimeout)
         { }
 
         /// <summary>
         /// Initialises a new <see cref="NfsClient"/> with explicit authentication credentials.
         /// </summary>
+        /// <param name="server">Hostname or IP address of the NFS server.</param>
+        /// <param name="exportPath">Server-side export path to mount (e.g. <c>/exports/data</c>).</param>
+        /// <param name="credentials">Authentication credentials to use for all RPCs.</param>
+        /// <param name="version">
+        /// NFS version to use; <see cref="NfsVersion.Auto"/> tries NFSv4 → v3 → v2.
+        /// </param>
+        /// <param name="nfsPort">
+        /// TCP port the NFS server listens on. <c>0</c> means discover via portmapper.
+        /// </param>
+        /// <param name="mountPort">
+        /// TCP port the Mount service listens on. <c>0</c> means discover via portmapper.
+        /// </param>
+        /// <param name="connectTimeout">Timeout for each connection attempt. Defaults to 30 s.</param>
+        /// <param name="readTimeout">Timeout for each read/write RPC. Defaults to 60 s.</param>
         public NfsClient(
             string          server,
             string          exportPath,
             AuthCredentials credentials,
             NfsVersion      version        = NfsVersion.Auto,
+            int             nfsPort        = 0,
+            int             mountPort      = 0,
             TimeSpan?       connectTimeout = null,
             TimeSpan?       readTimeout    = null)
         {
@@ -90,6 +121,8 @@ namespace NfsSharp
             _exportPath       = exportPath  ?? throw new ArgumentNullException(nameof(exportPath));
             _credentials      = credentials ?? throw new ArgumentNullException(nameof(credentials));
             _requestedVersion = version;
+            _customNfsPort    = nfsPort;
+            _customMountPort  = mountPort;
             _connectTimeout   = connectTimeout ?? TimeSpan.FromSeconds(30);
             _readTimeout      = readTimeout    ?? TimeSpan.FromSeconds(60);
         }
@@ -191,6 +224,172 @@ namespace NfsSharp
         {
             ThrowIfDisposed(); EnsureConnected();
             return _protocol!.ReadDirAsync(handle, ct);
+        }
+
+        // ── Streaming directory enumeration ───────────────────────────────────
+
+        /// <summary>
+        /// Streams the entries of the directory at <paramref name="path"/> one page at a time.
+        /// Each READDIR page is fetched from the server only when the consumer advances the
+        /// enumerator past the last already-yielded entry, so memory use is bounded to a
+        /// single server response at a time regardless of directory size.
+        /// </summary>
+        /// <param name="path">Path relative to the mounted export root.</param>
+        /// <param name="ct">Token to cancel enumeration mid-stream.</param>
+        /// <returns>An <see cref="IAsyncEnumerable{T}"/> of directory entries.</returns>
+        /// <example>
+        /// <code>
+        /// // Process a million-entry directory without ever holding all entries in memory.
+        /// await foreach (var entry in nfs.ReadDirStreamAsync("/huge-dir"))
+        /// {
+        ///     if (entry.Name.EndsWith(".log")) await ProcessAsync(entry);
+        /// }
+        /// </code>
+        /// </example>
+        public async IAsyncEnumerable<NfsDirectoryEntry> ReadDirStreamAsync(
+            string path,
+            [EnumeratorCancellation] CancellationToken ct = default)
+        {
+            ThrowIfDisposed(); EnsureConnected();
+            var (handle, attrs) = await LookupAsync(path, ct).ConfigureAwait(false);
+            if (attrs.Type != NfsFileType.Directory)
+                throw new NfsException(NfsStatus.NotDir, $"'{path}' is not a directory.");
+            await foreach (var entry in _protocol!.EnumerateDirAsync(handle, ct).ConfigureAwait(false))
+                yield return entry;
+        }
+
+        /// <summary>
+        /// Streams the entries of the directory identified by <paramref name="handle"/>
+        /// one page at a time.
+        /// </summary>
+        /// <param name="handle">An opaque NFS file handle for the directory.</param>
+        /// <param name="ct">Token to cancel enumeration mid-stream.</param>
+        /// <returns>An <see cref="IAsyncEnumerable{T}"/> of directory entries.</returns>
+        public IAsyncEnumerable<NfsDirectoryEntry> ReadDirStreamAsync(
+            NfsFileHandle handle,
+            CancellationToken ct = default)
+        {
+            ThrowIfDisposed(); EnsureConnected();
+            return _protocol!.EnumerateDirAsync(handle, ct);
+        }
+
+        // ── Recursive directory enumeration ───────────────────────────────────
+
+        /// <summary>
+        /// Recursively and lazily streams every file and directory beneath
+        /// <paramref name="path"/> in depth-first order.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// Each entry's <see cref="NfsDirectoryEntry.RelativePath"/> is set to its path
+        /// relative to <paramref name="path"/>. <see cref="NfsDirectoryEntry.Name"/> remains
+        /// the bare leaf name as returned by the server.
+        /// </para>
+        /// <para>
+        /// On <strong>NFSv3</strong> (READDIRPLUS) each entry already carries a file handle
+        /// and attributes so recursive descent requires no extra RPCs.
+        /// On <strong>NFSv2 / NFSv4</strong> an additional LOOKUP is issued for each
+        /// subdirectory entry to obtain its file handle.
+        /// </para>
+        /// <para>
+        /// The dot (<c>.</c>) and double-dot (<c>..</c>) pseudo-entries are automatically
+        /// skipped at every level.
+        /// </para>
+        /// </remarks>
+        /// <param name="path">Path relative to the mounted export root.</param>
+        /// <param name="ct">Token to cancel enumeration mid-stream.</param>
+        /// <returns>
+        /// An <see cref="IAsyncEnumerable{T}"/> that yields every descendant entry,
+        /// each annotated with its <see cref="NfsDirectoryEntry.RelativePath"/>.
+        /// </returns>
+        /// <example>
+        /// <code>
+        /// // Find all .csv files anywhere under /reports, without loading the full tree.
+        /// await foreach (var entry in nfs.ReadDirRecursiveAsync("/reports"))
+        /// {
+        ///     if (entry.Name.EndsWith(".csv"))
+        ///         Console.WriteLine(entry.RelativePath); // e.g. "q4/summary.csv"
+        /// }
+        /// </code>
+        /// </example>
+        public async IAsyncEnumerable<NfsDirectoryEntry> ReadDirRecursiveAsync(
+            string path,
+            [EnumeratorCancellation] CancellationToken ct = default)
+        {
+            ThrowIfDisposed(); EnsureConnected();
+            var (handle, attrs) = await LookupAsync(path, ct).ConfigureAwait(false);
+            if (attrs.Type != NfsFileType.Directory)
+                throw new NfsException(NfsStatus.NotDir, $"'{path}' is not a directory.");
+            await foreach (var entry in RecurseAsync(handle, string.Empty, ct).ConfigureAwait(false))
+                yield return entry;
+        }
+
+        /// <summary>
+        /// Recursively and lazily streams every file and directory beneath the directory
+        /// identified by <paramref name="handle"/> in depth-first order.
+        /// </summary>
+        /// <param name="handle">An opaque NFS file handle for the starting directory.</param>
+        /// <param name="baseRelativePath">
+        /// Prefix prepended to each yielded entry's <see cref="NfsDirectoryEntry.RelativePath"/>.
+        /// Pass an empty string for the top-level call; the method populates this automatically
+        /// during recursion.
+        /// </param>
+        /// <param name="ct">Token to cancel enumeration mid-stream.</param>
+        /// <returns>
+        /// An <see cref="IAsyncEnumerable{T}"/> that yields every descendant entry.
+        /// </returns>
+        public IAsyncEnumerable<NfsDirectoryEntry> ReadDirRecursiveAsync(
+            NfsFileHandle handle,
+            string baseRelativePath = "",
+            CancellationToken ct = default)
+        {
+            ThrowIfDisposed(); EnsureConnected();
+            return RecurseAsync(handle, baseRelativePath, ct);
+        }
+
+        /// <summary>
+        /// Core depth-first recursive streaming implementation.
+        /// Skips <c>.</c> and <c>..</c> at every level, annotates
+        /// <see cref="NfsDirectoryEntry.RelativePath"/>, and descends into
+        /// every entry whose type is <see cref="NfsFileType.Directory"/>.
+        /// </summary>
+        private async IAsyncEnumerable<NfsDirectoryEntry> RecurseAsync(
+            NfsFileHandle dir,
+            string parentRelativePath,
+            [EnumeratorCancellation] CancellationToken ct)
+        {
+            await foreach (var entry in _protocol!.EnumerateDirAsync(dir, ct).ConfigureAwait(false))
+            {
+                // Skip the mandatory dot-entries present in every NFS directory.
+                if (entry.Name is "." or "..") continue;
+
+                string relPath = string.IsNullOrEmpty(parentRelativePath)
+                    ? entry.Name
+                    : parentRelativePath + "/" + entry.Name;
+
+                // Yield the entry with its populated RelativePath.
+                yield return new NfsDirectoryEntry
+                {
+                    FileId      = entry.FileId,
+                    Name        = entry.Name,
+                    Cookie      = entry.Cookie,
+                    Attributes  = entry.Attributes,
+                    FileHandle  = entry.FileHandle,
+                    RelativePath = relPath,
+                };
+
+                // Descend into subdirectories.
+                bool isDir = entry.Attributes?.Type == NfsFileType.Directory;
+                if (!isDir) continue;
+
+                // Prefer the handle carried inside READDIRPLUS results (NFSv3);
+                // fall back to a LOOKUP for NFSv2 / NFSv4 entries that lack a handle.
+                NfsFileHandle childHandle = entry.FileHandle
+                    ?? (await _protocol!.LookupAsync(dir, entry.Name, ct).ConfigureAwait(false)).Handle;
+
+                await foreach (var child in RecurseAsync(childHandle, relPath, ct).ConfigureAwait(false))
+                    yield return child;
+            }
         }
 
         /// <summary>
@@ -367,6 +566,9 @@ namespace NfsSharp
 
         private async Task<int> ResolveNfsPortAsync(CancellationToken ct)
         {
+            // Honour the caller-supplied port; skip the portmapper round-trip entirely.
+            if (_customNfsPort != 0) return _customNfsPort;
+
             using var pm = new PortMapper(_server, _connectTimeout, _readTimeout);
             await pm.ConnectAsync(ct).ConfigureAwait(false);
             uint ver = _requestedVersion switch
@@ -378,16 +580,19 @@ namespace NfsSharp
                 _               => 3,
             };
             int port = await pm.GetPortAsync(RpcConstants.NfsProgram, ver, ct).ConfigureAwait(false);
-            return port != 0 ? port : 2049;
+            return port != 0 ? port : 2049; // standard NFS port
         }
 
         private async Task<int> ResolveMountPortAsync(NfsVersion version, CancellationToken ct)
         {
+            // Honour the caller-supplied mount port; skip the portmapper round-trip entirely.
+            if (_customMountPort != 0) return _customMountPort;
+
             using var pm = new PortMapper(_server, _connectTimeout, _readTimeout);
             await pm.ConnectAsync(ct).ConfigureAwait(false);
             uint mountVer = version == NfsVersion.V2 ? 1u : 3u;
             int port = await pm.GetPortAsync(RpcConstants.MountProgram, mountVer, ct).ConfigureAwait(false);
-            return port != 0 ? port : 635;
+            return port != 0 ? port : 635; // standard mount port
         }
 
         /// <summary>

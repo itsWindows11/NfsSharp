@@ -99,6 +99,21 @@ namespace NfsSharp.Protocol
         /// </summary>
         Task<IReadOnlyList<NfsDirectoryEntry>> ReadDirAsync(NfsFileHandle dir, CancellationToken ct);
 
+        /// <summary>
+        /// Streams the entries of a directory one page at a time, yielding each entry as it
+        /// is parsed from the wire without buffering the entire result set in memory.
+        /// Implementations must use <see langword="yield return"/> and fetch the next READDIR
+        /// page only when the consumer advances the enumerator past the last entry of the
+        /// current page.
+        /// </summary>
+        /// <remarks>
+        /// Use this overload when listing large directories or when you need to process
+        /// entries incrementally (e.g. find the first match, cancel early, throttle).
+        /// For small directories where all entries fit in one page the latency difference
+        /// vs <see cref="ReadDirAsync"/> is negligible.
+        /// </remarks>
+        IAsyncEnumerable<NfsDirectoryEntry> EnumerateDirAsync(NfsFileHandle dir, CancellationToken ct);
+
         /// <summary>Reads the target of a symbolic link.</summary>
         Task<string> ReadLinkAsync(NfsFileHandle handle, CancellationToken ct);
 

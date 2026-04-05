@@ -81,6 +81,9 @@ namespace NfsSharp.Tests
             public Task<IReadOnlyList<NfsDirectoryEntry>> ReadDirAsync(NfsFileHandle dir, CancellationToken ct)
                 => throw new NotImplementedException();
 
+            public IAsyncEnumerable<NfsDirectoryEntry> EnumerateDirAsync(NfsFileHandle dir, CancellationToken ct)
+                => throw new NotImplementedException();
+
             public Task<string> ReadLinkAsync(NfsFileHandle handle, CancellationToken ct)
                 => throw new NotImplementedException();
 

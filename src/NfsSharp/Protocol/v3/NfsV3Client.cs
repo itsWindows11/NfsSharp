@@ -175,9 +175,22 @@ namespace NfsSharp.Protocol.v3
         public async Task<IReadOnlyList<NfsDirectoryEntry>> ReadDirAsync(
             NfsFileHandle dir, CancellationToken ct)
         {
-            // Use READDIRPLUS to populate Attributes and FileHandle on each entry.
-            var results    = new List<NfsDirectoryEntry>();
-            ulong cookie   = 0;
+            var results = new List<NfsDirectoryEntry>();
+            await foreach (var entry in EnumerateDirAsync(dir, ct).ConfigureAwait(false))
+                results.Add(entry);
+            return results;
+        }
+
+        /// <inheritdoc cref="INfsProtocolClient.EnumerateDirAsync"/>
+        public async IAsyncEnumerable<NfsDirectoryEntry> EnumerateDirAsync(
+            NfsFileHandle dir,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+        {
+            // NFSv3 READDIRPLUS pages through entries using a uint64 cookie + cookieverifier.
+            // Each READDIRPLUS response includes per-entry attributes and file handles,
+            // so recursive traversal requires zero additional RPCs.
+            // Pages are fetched lazily — only when the consumer requests more entries.
+            ulong  cookie   = 0;
             byte[] verifier = new byte[8];
 
             while (true)
@@ -187,31 +200,34 @@ namespace NfsSharp.Protocol.v3
                     dir.WriteTo(w);
                     w.WriteUInt64(cookie);
                     w.WriteFixedOpaque(verifier, 8);
-                    w.WriteUInt32(4096);
-                    w.WriteUInt32(65536);
+                    w.WriteUInt32(4096);   // dircount  — byte budget for names only
+                    w.WriteUInt32(65536);  // maxcount  — byte budget for full reply
                 }, ct).ConfigureAwait(false);
                 CheckStatus(r);
                 SkipPostOpAttr(r);
                 verifier = r.ReadFixedOpaque(8);
-                bool any = false;
-                while (r.ReadBool())
+
+                bool anyInPage = false;
+                while (r.ReadBool()) // value_follows
                 {
-                    ulong  fileid = r.ReadUInt64();
-                    string n      = r.ReadString(255);
-                    ulong  ck     = r.ReadUInt64();
-                    NfsFileAttributes? attrs = ReadPostOpAttr(r);
-                    NfsFileHandle? fh = r.ReadBool() ? NfsFileHandle.ReadFrom(r) : null;
-                    results.Add(new NfsDirectoryEntry
+                    ulong              fileid = r.ReadUInt64();
+                    string             name   = r.ReadString(255);
+                    ulong              ck     = r.ReadUInt64();
+                    NfsFileAttributes? attrs  = ReadPostOpAttr(r);
+                    NfsFileHandle?     fh     = r.ReadBool() ? NfsFileHandle.ReadFrom(r) : null;
+
+                    yield return new NfsDirectoryEntry
                     {
-                        FileId = fileid, Name = n, Cookie = ck,
+                        FileId = fileid, Name = name, Cookie = ck,
                         Attributes = attrs, FileHandle = fh,
-                    });
-                    cookie = ck;
-                    any = true;
+                    };
+                    cookie    = ck;
+                    anyInPage = true;
                 }
-                if (r.ReadBool() || !any) break; // eof
+
+                bool eof = r.ReadBool();
+                if (eof || !anyInPage) yield break;
             }
-            return results;
         }
 
         public async Task<string> ReadLinkAsync(NfsFileHandle handle, CancellationToken ct)

@@ -238,39 +238,90 @@ namespace NfsSharp.Protocol.v4
         public async Task<IReadOnlyList<NfsDirectoryEntry>> ReadDirAsync(
             NfsFileHandle dir, CancellationToken ct)
         {
-            var results   = new List<NfsDirectoryEntry>();
-            ulong cookie  = 0;
+            var results = new List<NfsDirectoryEntry>();
+            await foreach (var entry in EnumerateDirAsync(dir, ct).ConfigureAwait(false))
+                results.Add(entry);
+            return results;
+        }
+
+        /// <inheritdoc cref="INfsProtocolClient.EnumerateDirAsync"/>
+        public async IAsyncEnumerable<NfsDirectoryEntry> EnumerateDirAsync(
+            NfsFileHandle dir,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+        {
+            // NFSv4 COMPOUND: PUTFH + READDIR.
+            // We request the 'type' attribute (word0 bit 0) so that the recursive
+            // enumerator can identify subdirectories without extra GETATTR RPCs.
+            // Pages are fetched lazily — only when the consumer requests more entries.
+            ulong  cookie   = 0;
             byte[] verifier = new byte[8];
 
             while (true)
             {
-                // COMPOUND (2): PUTFH + READDIR
                 var r = await Compound("readdir", 2, w =>
                 {
                     PutFh(w, dir);
                     w.WriteInt32(Op_ReadDir);
                     w.WriteUInt64(cookie);
                     w.WriteFixedOpaque(verifier, 8);
-                    w.WriteUInt32(4096);
-                    w.WriteUInt32(65536);
-                    w.WriteUInt32(2); w.WriteUInt32(0); w.WriteUInt32(0); // no attr request
+                    w.WriteUInt32(4096);          // dircount
+                    w.WriteUInt32(65536);         // maxcount
+                    w.WriteUInt32(2);             // bitmap4 length = 2 words
+                    w.WriteUInt32(AttrBit0_Type); // word0: request 'type'
+                    w.WriteUInt32(0);             // word1: nothing
                 }, ct).ConfigureAwait(false);
-                ChkOp(r, Op_PutFh); ChkOp(r, Op_ReadDir);
-                verifier = r.ReadFixedOpaque(8);
-                bool any = false;
-                while (r.ReadBool())
+                ChkOp(r, Op_PutFh);
+                ChkOp(r, Op_ReadDir);
+                verifier = r.ReadFixedOpaque(8); // cookieverf4
+
+                bool anyInPage = false;
+                while (r.ReadBool()) // entry4 value_follows
                 {
-                    ulong  fileid = r.ReadUInt64();
-                    string n      = r.ReadString(255);
-                    ulong  ck     = r.ReadUInt64();
-                    r.ReadVarOpaque(); // attrlist4 (empty)
-                    results.Add(new NfsDirectoryEntry { FileId = fileid, Name = n, Cookie = ck });
-                    cookie = ck;
-                    any = true;
+                    // RFC 7530 §14.2.22: entry4 = { cookie, name, fattr4 }
+                    ulong  ck   = r.ReadUInt64();    // nfs_cookie4
+                    string name = r.ReadString(255); // component4
+
+                    // fattr4 = { bitmap4 attrmask, opaque attrvals }
+                    NfsFileType? type = ParseV4EntryType(r);
+
+                    yield return new NfsDirectoryEntry
+                    {
+                        Name       = name,
+                        Cookie     = ck,
+                        Attributes = type.HasValue
+                            ? new NfsFileAttributes { Type = type.Value }
+                            : null,
+                    };
+                    cookie    = ck;
+                    anyInPage = true;
                 }
-                if (r.ReadBool() || !any) break; // eof
+
+                bool eof = r.ReadBool();
+                if (eof || !anyInPage) yield break;
             }
-            return results;
+        }
+
+        /// <summary>
+        /// Parses an <c>fattr4</c> from the current position and returns the <c>type</c>
+        /// attribute value if it was included in the attrmask, or <see langword="null"/> otherwise.
+        /// Consumes the full <c>fattr4</c> regardless of which attributes are present.
+        /// </summary>
+        private static NfsFileType? ParseV4EntryType(XdrReader r)
+        {
+            // bitmap4: count (uint32) + count × uint32 words
+            uint maskCount = r.ReadUInt32();
+            uint word0     = maskCount > 0 ? r.ReadUInt32() : 0;
+            for (uint i = 1; i < maskCount; i++) r.ReadUInt32(); // discard remaining words
+
+            // attrlist4: opaque<> (length-prefixed)
+            byte[] attrvals = r.ReadVarOpaque();
+
+            if ((word0 & AttrBit0_Type) != 0 && attrvals.Length >= 4)
+            {
+                var inner = new XdrReader(attrvals);
+                return (NfsFileType)inner.ReadInt32();
+            }
+            return null;
         }
 
         public async Task<string> ReadLinkAsync(NfsFileHandle handle, CancellationToken ct)

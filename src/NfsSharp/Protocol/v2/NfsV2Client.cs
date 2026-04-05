@@ -175,6 +175,19 @@ namespace NfsSharp.Protocol.v2
             NfsFileHandle dir, CancellationToken ct)
         {
             var results = new List<NfsDirectoryEntry>();
+            await foreach (var entry in EnumerateDirAsync(dir, ct).ConfigureAwait(false))
+                results.Add(entry);
+            return results;
+        }
+
+        /// <inheritdoc cref="INfsProtocolClient.EnumerateDirAsync"/>
+        public async IAsyncEnumerable<NfsDirectoryEntry> EnumerateDirAsync(
+            NfsFileHandle dir,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+        {
+            // NFSv2 READDIR pages through entries using a uint32 cookie.
+            // Each page is fetched only when the consumer advances past the last entry
+            // of the current page, giving true lazy streaming semantics.
             uint cookie = 0;
             while (true)
             {
@@ -182,22 +195,24 @@ namespace NfsSharp.Protocol.v2
                 {
                     WriteHandle(w, dir);
                     w.WriteUInt32(cookie);
-                    w.WriteUInt32(8192);
+                    w.WriteUInt32(8192); // count hint
                 }, ct).ConfigureAwait(false);
                 CheckStatus(reader);
-                bool any = false;
-                while (reader.ReadBool())
+
+                bool anyInPage = false;
+                while (reader.ReadBool()) // value_follows
                 {
                     uint   fileid = reader.ReadUInt32();
                     string name   = reader.ReadString(255);
                     uint   ck     = reader.ReadUInt32();
-                    results.Add(new NfsDirectoryEntry { FileId = fileid, Name = name, Cookie = ck });
-                    cookie = ck;
-                    any = true;
+                    yield return new NfsDirectoryEntry { FileId = fileid, Name = name, Cookie = ck };
+                    cookie     = ck;
+                    anyInPage  = true;
                 }
-                if (reader.ReadBool() || !any) break; // eof
+
+                bool eof = reader.ReadBool();
+                if (eof || !anyInPage) yield break;
             }
-            return results;
         }
 
         public async Task<string> ReadLinkAsync(NfsFileHandle handle, CancellationToken ct)
