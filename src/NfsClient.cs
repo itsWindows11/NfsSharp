@@ -680,6 +680,200 @@ public sealed class NfsClient : IAsyncDisposable, IDisposable
         return new NfsStream(_protocol!, handle, (long)attrs.Size, readable, writable);
     }
 
+    // ── Parallel local file transfer fast paths ──────────────────────────
+
+    /// <summary>
+    /// Downloads a remote file to a local path using parallel ranged NFS READ calls.
+    /// This bypasses <see cref="NfsStream"/> and is optimized for bulk transfer.
+    /// </summary>
+    /// <param name="remotePath">Path of the remote file (relative to export root).</param>
+    /// <param name="localPath">Destination local file path.</param>
+    /// <param name="degreeOfParallelism">Number of concurrent transfer workers. Must be at least 1.</param>
+    /// <param name="chunkSize">Chunk size per worker in bytes. Must be at least 1.</param>
+    /// <param name="progress">Optional progress callback that receives cumulative transferred bytes.</param>
+    /// <param name="ct">Token to cancel the transfer.</param>
+    public async Task DownloadFileToLocalAsync(
+        string remotePath,
+        string localPath,
+        int degreeOfParallelism = 4,
+        int chunkSize = 4 * 1024 * 1024,
+        IProgress<long>? progress = null,
+        CancellationToken ct = default)
+    {
+        ThrowIfDisposed(); EnsureConnected();
+        ValidateParallelIoArgs(remotePath, localPath, degreeOfParallelism, chunkSize);
+
+        var (handle, attrs) = await LookupAsync(remotePath, ct).ConfigureAwait(false);
+        if (attrs.Type != NfsFileType.Regular)
+            throw new NfsException(NfsStatus.IsDir, $"'{remotePath}' is not a regular file.");
+
+        long length = checked((long)attrs.Size);
+        progress?.Report(0);
+
+        string? localDir = Path.GetDirectoryName(localPath);
+        if (!string.IsNullOrEmpty(localDir))
+            Directory.CreateDirectory(localDir);
+
+        using (var init = new FileStream(localPath, FileMode.Create, FileAccess.Write, FileShare.Read,
+                   bufferSize: 128 * 1024, options: FileOptions.Asynchronous))
+        {
+            init.SetLength(length);
+        }
+
+        if (length == 0)
+            return;
+
+        int workers = Math.Min(degreeOfParallelism, (int)Math.Ceiling((double)length / chunkSize));
+        long nextOffset = 0;
+        long transferredBytes = 0;
+        var tasks = new Task[workers];
+
+        for (int i = 0; i < workers; i++)
+        {
+            tasks[i] = Task.Run(async () =>
+            {
+                using var local = new FileStream(localPath, FileMode.Open, FileAccess.Write, FileShare.Read,
+                    bufferSize: 128 * 1024, options: FileOptions.Asynchronous);
+
+                while (true)
+                {
+                    ct.ThrowIfCancellationRequested();
+
+                    long segmentOffset = Interlocked.Add(ref nextOffset, chunkSize) - chunkSize;
+                    if (segmentOffset >= length)
+                        break;
+
+                    int segmentLength = (int)Math.Min(chunkSize, length - segmentOffset);
+                    long remoteOffset = segmentOffset;
+                    int remaining = segmentLength;
+
+                    local.Position = segmentOffset;
+                    while (remaining > 0)
+                    {
+                        NfsReadResult read = await _protocol!.ReadAsync(
+                            handle, remoteOffset, remaining, ct).ConfigureAwait(false);
+
+                        if (read.Data.Length == 0)
+                            throw new IOException("Unexpected EOF while downloading remote file.");
+
+                        await local.WriteAsync(read.Data, 0, read.Data.Length, ct).ConfigureAwait(false);
+
+                        remoteOffset += read.Data.Length;
+                        remaining -= read.Data.Length;
+
+                        long total = Interlocked.Add(ref transferredBytes, read.Data.Length);
+                        progress?.Report(total);
+                    }
+                }
+            }, ct);
+        }
+
+        await Task.WhenAll(tasks).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Uploads a local file to a remote path using parallel ranged NFS WRITE calls.
+    /// This bypasses <see cref="NfsStream"/> and is optimized for bulk transfer.
+    /// </summary>
+    /// <param name="localPath">Source local file path.</param>
+    /// <param name="remotePath">Destination remote file path (relative to export root).</param>
+    /// <param name="degreeOfParallelism">Number of concurrent transfer workers. Must be at least 1.</param>
+    /// <param name="chunkSize">Chunk size per worker in bytes. Must be at least 1.</param>
+    /// <param name="progress">Optional progress callback that receives cumulative transferred bytes.</param>
+    /// <param name="ct">Token to cancel the transfer.</param>
+    public async Task UploadFileFromLocalAsync(
+        string localPath,
+        string remotePath,
+        int degreeOfParallelism = 4,
+        int chunkSize = 4 * 1024 * 1024,
+        IProgress<long>? progress = null,
+        CancellationToken ct = default)
+    {
+        ThrowIfDisposed(); EnsureConnected();
+        ValidateParallelIoArgs(remotePath, localPath, degreeOfParallelism, chunkSize);
+
+        if (!File.Exists(localPath))
+            throw new FileNotFoundException("Local file was not found.", localPath);
+
+        var fileInfo = new FileInfo(localPath);
+        long length = fileInfo.Length;
+        progress?.Report(0);
+
+        var (dir, name) = await ResolveParentAsync(remotePath, ct).ConfigureAwait(false);
+        NfsFileHandle remoteHandle = await _protocol!.CreateFileAsync(
+            dir, name,
+            new NfsSetAttributes { Mode = 0b110_100_100 /* 0644 */ },
+            ct).ConfigureAwait(false);
+
+        if (length == 0)
+        {
+            await _protocol.CommitAsync(remoteHandle, 0, 0, ct).ConfigureAwait(false);
+            return;
+        }
+
+        int workers = Math.Min(degreeOfParallelism, (int)Math.Ceiling((double)length / chunkSize));
+        long nextOffset = 0;
+        long transferredBytes = 0;
+        var tasks = new Task[workers];
+
+        for (int i = 0; i < workers; i++)
+        {
+            tasks[i] = Task.Run(async () =>
+            {
+                using var local = new FileStream(localPath, FileMode.Open, FileAccess.Read, FileShare.Read,
+                    bufferSize: 128 * 1024, options: FileOptions.Asynchronous);
+                var buffer = new byte[chunkSize];
+
+                while (true)
+                {
+                    ct.ThrowIfCancellationRequested();
+
+                    long segmentOffset = Interlocked.Add(ref nextOffset, chunkSize) - chunkSize;
+                    if (segmentOffset >= length)
+                        break;
+
+                    int segmentLength = (int)Math.Min(chunkSize, length - segmentOffset);
+                    local.Position = segmentOffset;
+
+                    int readTotal = 0;
+                    while (readTotal < segmentLength)
+                    {
+                        int n = await local.ReadAsync(buffer, readTotal, segmentLength - readTotal, ct)
+                            .ConfigureAwait(false);
+                        if (n == 0)
+                            throw new EndOfStreamException("Unexpected end of local file during upload.");
+                        readTotal += n;
+                    }
+
+                    long remoteOffset = segmentOffset;
+                    int writtenTotal = 0;
+                    while (writtenTotal < segmentLength)
+                    {
+                        int written = await _protocol!.WriteAsync(
+                            remoteHandle,
+                            remoteOffset,
+                            buffer,
+                            writtenTotal,
+                            segmentLength - writtenTotal,
+                            ct).ConfigureAwait(false);
+
+                        if (written <= 0)
+                            throw new IOException("NFS WRITE returned zero bytes written.");
+
+                        remoteOffset += written;
+                        writtenTotal += written;
+
+                        long total = Interlocked.Add(ref transferredBytes, written);
+                        progress?.Report(total);
+                    }
+                }
+            }, ct);
+        }
+
+        await Task.WhenAll(tasks).ConfigureAwait(false);
+        await _protocol.CommitAsync(remoteHandle, 0, 0, ct).ConfigureAwait(false);
+    }
+
     // ── IDisposable / IAsyncDisposable ────────────────────────────────────
 
     /// <inheritdoc />
@@ -808,6 +1002,22 @@ public sealed class NfsClient : IAsyncDisposable, IDisposable
             (dirHandle, _) = await LookupAsync(dir, ct).ConfigureAwait(false);
 
         return (dirHandle, name);
+    }
+
+    private static void ValidateParallelIoArgs(
+        string remotePath,
+        string localPath,
+        int degreeOfParallelism,
+        int chunkSize)
+    {
+        if (string.IsNullOrWhiteSpace(remotePath))
+            throw new ArgumentException("Value cannot be null or whitespace.", nameof(remotePath));
+        if (string.IsNullOrWhiteSpace(localPath))
+            throw new ArgumentException("Value cannot be null or whitespace.", nameof(localPath));
+        if (degreeOfParallelism < 1)
+            throw new ArgumentOutOfRangeException(nameof(degreeOfParallelism), "Must be at least 1.");
+        if (chunkSize < 1)
+            throw new ArgumentOutOfRangeException(nameof(chunkSize), "Must be at least 1.");
     }
 
     private NfsVersion[] VersionsToTry() => _requestedVersion switch

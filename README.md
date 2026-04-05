@@ -161,6 +161,8 @@ Console.WriteLine($"Negotiated: {nfs.NegotiatedVersion}"); // e.g. V3
 | `FsStatAsync(ct = default)` | Returns filesystem statistics for the mounted export |
 | `ListExportsAsync(ct = default)` | Lists exports advertised by the server |
 | `OpenFileAsync(path, access = FileAccess.ReadWrite, create = false, ct = default)` | Opens an `NfsStream` with read/write/read-write access; optional create/truncate |
+| `DownloadFileToLocalAsync(remotePath, localPath, degreeOfParallelism = 4, chunkSize = 4 * 1024 * 1024, progress = null, ct = default)` | Fast-path download to local disk using parallel ranged reads |
+| `UploadFileFromLocalAsync(localPath, remotePath, degreeOfParallelism = 4, chunkSize = 4 * 1024 * 1024, progress = null, ct = default)` | Fast-path upload from local disk using parallel ranged writes |
 | `Dispose()` | Disposes client resources |
 | `DisposeAsync()` | Asynchronously disposes client resources |
 
