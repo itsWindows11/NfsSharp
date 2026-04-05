@@ -61,7 +61,11 @@ namespace NfsSharp.Xdr
         public float ReadFloat()
         {
             ReadFull(_int32Buf, 4);
+#if NETSTANDARD2_0
+            return Int32BitsToSingle(BinaryPrimitives.ReadInt32BigEndian(_int32Buf));
+#else
             return BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32BigEndian(_int32Buf));
+#endif
         }
 
         /// <summary>Reads a 64-bit IEEE 754 double.</summary>
@@ -70,6 +74,10 @@ namespace NfsSharp.Xdr
             ReadFull(_int64Buf, 8);
             return BitConverter.Int64BitsToDouble(BinaryPrimitives.ReadInt64BigEndian(_int64Buf));
         }
+
+#if NETSTANDARD2_0
+        private static unsafe float Int32BitsToSingle(int value) => *(float*)&value;
+#endif
 
         /// <summary>Reads an XDR enumeration value as a signed 32-bit integer.</summary>
         public int ReadEnum() => ReadInt32();

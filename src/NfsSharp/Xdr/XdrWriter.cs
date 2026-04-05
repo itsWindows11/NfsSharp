@@ -58,7 +58,11 @@ namespace NfsSharp.Xdr
         /// <summary>Writes a 32-bit IEEE 754 float.</summary>
         public void WriteFloat(float value)
         {
+#if NETSTANDARD2_0
+            BinaryPrimitives.WriteInt32BigEndian(_int32Buf, SingleToInt32Bits(value));
+#else
             BinaryPrimitives.WriteInt32BigEndian(_int32Buf, BitConverter.SingleToInt32Bits(value));
+#endif
             _stream.Write(_int32Buf, 0, 4);
         }
 
@@ -68,6 +72,10 @@ namespace NfsSharp.Xdr
             BinaryPrimitives.WriteInt64BigEndian(_int64Buf, BitConverter.DoubleToInt64Bits(value));
             _stream.Write(_int64Buf, 0, 8);
         }
+
+#if NETSTANDARD2_0
+        private static unsafe int SingleToInt32Bits(float value) => *(int*)&value;
+#endif
 
         /// <summary>Writes an XDR enumeration value as a signed 32-bit integer.</summary>
         public void WriteEnum(int value) => WriteInt32(value);

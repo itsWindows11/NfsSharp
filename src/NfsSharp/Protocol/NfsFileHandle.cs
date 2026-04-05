@@ -56,12 +56,29 @@ namespace NfsSharp.Protocol
         /// <inheritdoc />
         public override int GetHashCode()
         {
+#if NETSTANDARD2_0
+            unchecked
+            {
+                int hash = 17;
+                foreach (byte b in Data)
+                    hash = hash * 31 + b;
+                return hash;
+            }
+#else
             var hash = new HashCode();
             foreach (byte b in Data) hash.Add(b);
             return hash.ToHashCode();
+#endif
         }
 
         /// <inheritdoc />
-        public override string ToString() => Convert.ToHexString(Data);
+        public override string ToString()
+        {
+#if NETSTANDARD2_0
+            return BitConverter.ToString(Data).Replace("-", "");
+#else
+            return Convert.ToHexString(Data);
+#endif
+        }
     }
 }

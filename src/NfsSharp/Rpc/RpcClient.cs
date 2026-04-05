@@ -51,7 +51,17 @@ namespace NfsSharp.Rpc
             cts.CancelAfter(_connectTimeout);
             try
             {
+#if NET5_0_OR_GREATER
                 await _tcp.ConnectAsync(_host, _port, cts.Token).ConfigureAwait(false);
+#else
+                var connectTask = _tcp.ConnectAsync(_host, _port);
+                if (await Task.WhenAny(connectTask, Task.Delay(-1, cts.Token)).ConfigureAwait(false) != connectTask)
+                {
+                    _tcp.Close();
+                    throw new TimeoutException($"Timed out connecting to {_host}:{_port}");
+                }
+                await connectTask.ConfigureAwait(false);
+#endif
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {

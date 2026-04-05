@@ -158,7 +158,7 @@ namespace NfsSharp
             string path, CancellationToken ct = default)
         {
             ThrowIfDisposed(); EnsureConnected();
-            var parts   = path.TrimStart('/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+            var parts   = path.TrimStart('/').Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries);
             var current = RootHandle;
             NfsFileAttributes? attrs = null;
 
@@ -332,7 +332,11 @@ namespace NfsSharp
         public ValueTask DisposeAsync()
         {
             Dispose();
+#if NETSTANDARD2_0
+            return new ValueTask();
+#else
             return ValueTask.CompletedTask;
+#endif
         }
 
         // ── Private helpers ───────────────────────────────────────────────────

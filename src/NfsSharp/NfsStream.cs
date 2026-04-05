@@ -230,6 +230,7 @@ namespace NfsSharp
         public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct)
             => ReadCoreAsync(buffer, offset, count, ct);
 
+#if !NETSTANDARD2_0
         /// <inheritdoc />
         public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
         {
@@ -241,6 +242,7 @@ namespace NfsSharp
             tmp.AsMemory(0, n).CopyTo(buffer);
             return n;
         }
+#endif
 
         private async Task<int> ReadCoreAsync(byte[] buffer, int offset, int count, CancellationToken ct)
         {
@@ -297,6 +299,7 @@ namespace NfsSharp
         public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken ct)
             => WriteCoreAsync(buffer, offset, count, ct);
 
+#if !NETSTANDARD2_0
         /// <inheritdoc />
         public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken ct = default)
         {
@@ -308,6 +311,7 @@ namespace NfsSharp
             byte[] tmp = buffer.ToArray();
             await WriteCoreAsync(tmp, 0, tmp.Length, ct).ConfigureAwait(false);
         }
+#endif
 
         private async Task WriteCoreAsync(byte[] buffer, int offset, int count, CancellationToken ct)
         {
@@ -408,6 +412,7 @@ namespace NfsSharp
         }
 
         /// <inheritdoc />
+#if !NETSTANDARD2_0
         public override async ValueTask DisposeAsync()
         {
             if (!_disposed && _hasUncommitted)
@@ -418,6 +423,7 @@ namespace NfsSharp
             _disposed = true;
             await base.DisposeAsync().ConfigureAwait(false);
         }
+#endif
 
         // ── Private helpers ───────────────────────────────────────────────────
 
