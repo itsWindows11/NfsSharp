@@ -21,7 +21,7 @@
     <RepositoryUrl>https://github.com/itsWindows11/NfsSharp</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <Copyright>Copyright © NfsSharp Contributors</Copyright>
+    <Copyright>Copyright © 2026 itsWindows11</Copyright>
     <PackageReleaseNotes>Initial preview release with NFSv2, NFSv3, and NFSv4 support.</PackageReleaseNotes>
     <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
     <IncludeSymbols>true</IncludeSymbols>
