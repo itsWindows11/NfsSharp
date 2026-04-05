@@ -1,0 +1,51 @@
+# NuGet Trusted Publishing Setup
+# ================================
+# Option A — API key (simple):
+#   1. Go to your NuGet.org account → API Keys → Create a key scoped to "NfsSharp".
+#   2. Add it as a GitHub secret named NUGET_API_KEY under:
+#      Settings → Secrets and variables → Actions → New repository secret
+#   3. Tag a release: git tag v0.1.0 && git push origin v0.1.0
+#
+# Option B — Trusted publishing (recommended, no secret needed):
+#   1. On NuGet.org, go to your package → Manage → Trusted publishers.
+#   2. Add a GitHub Actions publisher with your org/repo and this workflow file name.
+#   3. Remove the --api-key line from the "Push NuGet package" step below.
+
+name: Publish to NuGet
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build src/NfsSharp/NfsSharp.csproj -c Release --no-restore
+
+      - name: Pack
+        run: dotnet pack src/NfsSharp/NfsSharp.csproj -c Release --no-build -o ./artifacts
+
+      - name: Push NuGet package
+        run: dotnet nuget push ./artifacts/*.nupkg --source https://api.nuget.org/v3/index.json --api-key ${{ secrets.NUGET_API_KEY }}
+
+      - name: Push symbol package
+        run: dotnet nuget push ./artifacts/*.snupkg --source https://api.nuget.org/v3/index.json --api-key ${{ secrets.NUGET_API_KEY }}

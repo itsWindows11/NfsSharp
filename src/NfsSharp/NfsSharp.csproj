@@ -1,0 +1,55 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net9.0;net8.0;netstandard2.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>14</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <!-- NuGet package metadata -->
+    <PackageId>NfsSharp</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>NfsSharp Contributors</Authors>
+    <Company>NfsSharp</Company>
+    <Product>NfsSharp</Product>
+    <Description>A full-featured .NET library for interacting with NFS (Network File System) servers. Supports NFSv2, NFSv3, and NFSv4 protocols with AUTH_NONE, AUTH_SYS, and RPCSEC_GSS authentication. Handles all edge cases including large files, retries, connection failures, and concurrent access.</Description>
+    <Summary>Full-featured NFS client library for .NET supporting NFSv2, NFSv3, and NFSv4.</Summary>
+    <PackageTags>nfs;network-file-system;nfs-client;nfsv3;nfsv4;rpc;xdr;storage</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/itsWindows11/NfsSharp</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/itsWindows11/NfsSharp</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <Copyright>Copyright © 2026 itsWindows11</Copyright>
+    <PackageReleaseNotes>Initial preview release with NFSv2, NFSv3, and NFSv4 support.</PackageReleaseNotes>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0" PrivateAssets="All" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+    <!-- PolySharp is a source-only package: it emits polyfill types that the C# 14   -->
+    <!-- compiler needs (IsExternalInit, RequiredMemberAttribute, etc.) without adding  -->
+    <!-- a runtime dependency that consumers would inherit.                            -->
+    <PackageReference Include="PolySharp" Version="1.14.1"
+                      PrivateAssets="All"
+                      IncludeAssets="runtime;build;native;contentfiles;analyzers" />
+    <PackageReference Include="System.Memory" Version="4.5.5" />
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="8.0.0" />
+  </ItemGroup>
+
+</Project>
