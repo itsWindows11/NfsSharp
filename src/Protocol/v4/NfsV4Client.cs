@@ -37,7 +37,9 @@ internal sealed class NfsV4Client : INfsProtocolClient
     // NFSv4 attribute bitmap bits
     private const uint AttrBit0_Type = 0x00000001;
     private const uint AttrBit0_Size = 0x00000800;
-    private const uint AttrBit1_Mode = 0x00000002;
+    private const uint AttrBit1_Mode          = 0x00000002; // attribute 33
+    private const uint AttrBit1_TimeAccessSet = 0x00010000; // attribute 48
+    private const uint AttrBit1_TimeModifySet = 0x00400000; // attribute 54
 
     // NFSv4 write stability
     private const int Unstable4 = 0;
@@ -434,12 +436,25 @@ internal sealed class NfsV4Client : INfsProtocolClient
         var w = new XdrWriter(ms);
         // bitmap4: 2 words encoding which attrs we set
         uint word0 = 0, word1 = 0;
-        if (a.Size.HasValue) word0 |= AttrBit0_Size;
-        if (a.Mode.HasValue) word1 |= AttrBit1_Mode;
+        if (a.Size.HasValue)        word0 |= AttrBit0_Size;
+        if (a.Mode.HasValue)        word1 |= AttrBit1_Mode;
+        if (a.AccessTime.HasValue)  word1 |= AttrBit1_TimeAccessSet;
+        if (a.ModifyTime.HasValue)  word1 |= AttrBit1_TimeModifySet;
         w.WriteUInt32(2); w.WriteUInt32(word0); w.WriteUInt32(word1);
-        if (a.Size.HasValue) w.WriteUInt64(a.Size.Value);
-        if (a.Mode.HasValue) w.WriteUInt32(a.Mode.Value);
+        // Attribute values must be written in ascending attribute-number order.
+        if (a.Size.HasValue)       w.WriteUInt64(a.Size.Value);
+        if (a.Mode.HasValue)       w.WriteUInt32(a.Mode.Value);
+        if (a.AccessTime.HasValue) WriteV4SetTime(w, a.AccessTime.Value);
+        if (a.ModifyTime.HasValue) WriteV4SetTime(w, a.ModifyTime.Value);
         return ms.ToArray();
+    }
+
+    // NFSv4 settime4: SET_TO_SERVER_TIME=1, SET_TO_CLIENT_TIME=2 + nfstime4 (int64 secs, uint32 nsecs)
+    private static void WriteV4SetTime(XdrWriter w, DateTimeOffset time)
+    {
+        w.WriteInt32(2); // SET_TO_CLIENT_TIME
+        w.WriteInt64(time.ToUnixTimeSeconds());
+        w.WriteUInt32((uint)((time.Ticks % TimeSpan.TicksPerSecond) * 100L)); // 100-ns ticks → ns
     }
 
     // ── XDR read helpers ──────────────────────────────────────────────────

@@ -18,6 +18,12 @@ public sealed class NfsSetAttributes
 
     /// <summary>Truncate file to this size in bytes, or <see langword="null"/> to leave unchanged.</summary>
     public ulong? Size { get; set; }
+
+    /// <summary>New last-access time, or <see langword="null"/> to leave unchanged.</summary>
+    public DateTimeOffset? AccessTime { get; set; }
+
+    /// <summary>New last-modification time, or <see langword="null"/> to leave unchanged.</summary>
+    public DateTimeOffset? ModifyTime { get; set; }
 }
 
 /// <summary>Filesystem statistics returned by FSSTAT.</summary>
