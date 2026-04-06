@@ -96,8 +96,16 @@ internal sealed class InMemoryNfsServer
                 while (node.Data.Count < newSize) node.Data.Add(0);
 
             node.Size = (ulong)node.Data.Count;
+            // Content changed: update mtime unless the caller is setting it explicitly.
+            if (!attrs.ModifyTime.HasValue)
+                node.ModifyTime = DateTimeOffset.UtcNow;
         }
-        TouchModify(node);
+        // Apply explicit timestamps. AccessTime always comes from the caller when set;
+        // ModifyTime is already handled above for size changes.
+        if (attrs.AccessTime.HasValue) node.AccessTime = attrs.AccessTime.Value;
+        if (attrs.ModifyTime.HasValue) node.ModifyTime = attrs.ModifyTime.Value;
+        // Metadata changed: always bump ctime.
+        node.ChangeTime = DateTimeOffset.UtcNow;
     }
 
     /// <summary>Looks up an entry by name in a directory.</summary>

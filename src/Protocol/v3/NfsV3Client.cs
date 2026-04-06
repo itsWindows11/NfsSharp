@@ -331,8 +331,23 @@ internal sealed class NfsV3Client : INfsProtocolClient
         w.WriteBool(a.Uid.HasValue);  if (a.Uid.HasValue)  w.WriteUInt32(a.Uid.Value);
         w.WriteBool(a.Gid.HasValue);  if (a.Gid.HasValue)  w.WriteUInt32(a.Gid.Value);
         w.WriteBool(a.Size.HasValue); if (a.Size.HasValue) w.WriteUInt64(a.Size.Value);
-        w.WriteInt32(1); // SET_TO_SERVER_TIME for atime
-        w.WriteInt32(1); // SET_TO_SERVER_TIME for mtime
+        WriteV3Time(w, a.AccessTime);
+        WriteV3Time(w, a.ModifyTime);
+    }
+
+    // NFSv3 time_how: DONT_CHANGE=0, SET_TO_SERVER_TIME=1, SET_TO_CLIENT_TIME=2
+    private static void WriteV3Time(XdrWriter w, DateTimeOffset? time)
+    {
+        if (time.HasValue)
+        {
+            w.WriteInt32(2); // SET_TO_CLIENT_TIME
+            w.WriteUInt32((uint)time.Value.ToUnixTimeSeconds());
+            w.WriteUInt32((uint)((time.Value.Ticks % TimeSpan.TicksPerSecond) * 100L)); // 100-ns ticks → ns
+        }
+        else
+        {
+            w.WriteInt32(0); // DONT_CHANGE
+        }
     }
 
     public void Dispose() => _rpc.Dispose();

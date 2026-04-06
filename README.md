@@ -19,6 +19,7 @@ A full-featured .NET NFS client library supporting NFSv2, NFSv3, and NFSv4 with 
 - Retry on transient failures (socket errors, timeouts) with exponential back-off
 - Fully **seekable** streams — NFS is a random-access protocol
 - `SetLength` / `SetLengthAsync` for remote file truncation/extension
+- Set file timestamps (`AccessTime`, `ModifyTime`) via `NfsSetAttributes` on all protocol versions
 - `Flush` / `FlushAsync` issues an NFS `COMMIT` RPC to promote unstable writes to stable storage
 - Multi-target: **net10.0**, **net9.0**, **net8.0**, and **netstandard2.0**
 

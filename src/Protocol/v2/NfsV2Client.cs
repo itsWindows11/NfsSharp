@@ -308,8 +308,22 @@ internal sealed class NfsV2Client : INfsProtocolClient
         w.WriteUInt32(a.Uid  ?? 0xFFFFFFFF); // uid  (0xFFFF = no change)
         w.WriteUInt32(a.Gid  ?? 0xFFFFFFFF); // gid
         w.WriteUInt32(a.Size.HasValue ? (uint)a.Size.Value : 0xFFFFFFFF); // size
-        w.WriteUInt32(0xFFFFFFFF); w.WriteUInt32(0); // atime (no change)
-        w.WriteUInt32(0xFFFFFFFF); w.WriteUInt32(0); // mtime (no change)
+        WriteV2Time(w, a.AccessTime);
+        WriteV2Time(w, a.ModifyTime);
+    }
+
+    // NFSv2 timeval: seconds + microseconds. Seconds = 0xFFFFFFFF means "don't change".
+    private static void WriteV2Time(XdrWriter w, DateTimeOffset? time)
+    {
+        if (time.HasValue)
+        {
+            w.WriteUInt32((uint)time.Value.ToUnixTimeSeconds());
+            w.WriteUInt32((uint)((time.Value.Ticks % TimeSpan.TicksPerSecond) / 10L)); // 100-ns ticks → µs
+        }
+        else
+        {
+            w.WriteUInt32(0xFFFFFFFF); w.WriteUInt32(0); // no change
+        }
     }
 
     private static NfsFileAttributes ReadFattr2(XdrReader r)

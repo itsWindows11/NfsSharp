@@ -9,7 +9,7 @@
 
     <!-- NuGet package metadata -->
     <PackageId>NfsSharp</PackageId>
-    <Version>0.1.1</Version>
+    <Version>0.1.2</Version>
     <Authors>NfsSharp Contributors</Authors>
     <Company>NfsSharp</Company>
     <Product>NfsSharp</Product>
@@ -23,6 +23,9 @@
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <Copyright>Copyright © 2026 itsWindows11</Copyright>
     <PackageReleaseNotes>
+		[0.1.2]
+		Added AccessTime and ModifyTime properties to NfsSetAttributes, enabling callers to set the last-access and last-modification timestamps on remote files and directories via SETATTR. Supported on NFSv2, NFSv3, and NFSv4.
+
 		[0.1.1]
 		Refactored stream IO to use `Memory` &amp; `Span` overloads.
 
