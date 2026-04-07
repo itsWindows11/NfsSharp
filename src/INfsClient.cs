@@ -12,7 +12,7 @@ namespace NfsSharp;
 /// Implement this interface (or use <see cref="NfsClient"/> directly) to enable mocking
 /// in unit tests or other scenarios that require a substitute implementation.
 /// </summary>
-public interface INfsClient : IAsyncDisposable, IDisposable
+public interface INfsClient
 {
     // ── Properties ────────────────────────────────────────────────────────
 
