@@ -32,7 +32,7 @@ namespace NfsSharp;
 /// int n = await stream.ReadAsync(buf);
 /// </code>
 /// </remarks>
-public sealed class NfsClient : IAsyncDisposable, IDisposable
+public sealed class NfsClient : INfsClient
 {
     private readonly string           _server;
     private string?                  _exportPath;
